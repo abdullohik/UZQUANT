@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uzquant"
+version = "0.1.0"
+description = "Provenance-first data foundation for UZQUANT"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["uzquant*"]
+
+[tool.setuptools.package-data]
+uzquant = ["schema.sql"]
