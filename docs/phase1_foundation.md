@@ -25,6 +25,6 @@ This phase begins the provenance-first data foundation recommended by Phase 0. I
 - Date strings are stored in ISO 8601 form; ingestion must normalize and validate them before insertion.
 - Numeric values are stored as decimal strings to avoid binary floating-point corruption; domain-specific parsing and scale validation remain future work.
 
-## Next acceptance slice
+## Security-master ingestion
 
-After review, the next Phase 1 slice should archive one public RSE response and one Openinfo document, then implement deterministic parsers with fixtures derived from those archived documents. Any live retrieval must follow the access constraints recorded in `docs/data_sources.md`.
+The operator command retrieves the verified public RSE universe page, archives it with provenance, parses real identifiers and issuer candidates, enriches the required securities from explicit RSE class labels, and records every ingestion run. See outputs/security_master_validation.md.

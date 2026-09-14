@@ -9,8 +9,11 @@ description = "Provenance-first data foundation for UZQUANT"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.scripts]
+uzquant = "uzquant.cli:main"
+
 [tool.setuptools.packages.find]
 include = ["uzquant*"]
 
 [tool.setuptools.package-data]
-uzquant = ["schema.sql"]
+uzquant = ["migrations/*.sql"]

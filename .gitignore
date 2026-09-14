@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.sqlite3
+.env
+data/raw/*
+data/normalized/*
+data/derived/*
+!data/raw/.gitkeep
+!data/normalized/.gitkeep
+!data/derived/.gitkeep

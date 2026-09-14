@@ -1,223 +1,41 @@
 from __future__ import annotations
-
-import hashlib
-import sqlite3
-from datetime import datetime, timezone
+import json,sqlite3,uuid
+from datetime import datetime,timezone
 from pathlib import Path
-from typing import Any
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
+NAMESPACE=uuid.UUID("f344397f-83d2-4a64-95c7-74941be1f369")
+def utc_now(): return datetime.now(timezone.utc).isoformat()
+def stable_id(kind,value): return str(uuid.uuid5(NAMESPACE,f"{kind}:{value}"))
 class Repository:
-    """Small persistence layer that preserves provenance and point-in-time truth."""
-
-    def __init__(self, database: str | Path = ":memory:") -> None:
-        self.connection = sqlite3.connect(str(database))
-        self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys = ON")
-
-    def initialize(self) -> None:
-        schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
-        self.connection.executescript(schema)
-        self.connection.execute(
-            "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (1, ?)",
-            (_utc_now(),),
-        )
+    def __init__(self,database=":memory:"):
+        self.connection=sqlite3.connect(str(database)); self.connection.row_factory=sqlite3.Row; self.connection.execute("PRAGMA foreign_keys=ON")
+    def initialize(self):
+        self.connection.execute("CREATE TABLE IF NOT EXISTS schema_migrations(version TEXT PRIMARY KEY,applied_at TEXT NOT NULL)")
+        for path in sorted(Path(__file__).with_name("migrations").glob("*.sql")):
+            version=path.stem.split("_",1)[0]
+            if self.connection.execute("SELECT 1 FROM schema_migrations WHERE version=?",(version,)).fetchone(): continue
+            self.connection.executescript(path.read_text()); self.connection.execute("INSERT INTO schema_migrations VALUES(?,?)",(version,utc_now()))
         self.connection.commit()
-
-    def add_source(
-        self,
-        *,
-        name: str,
-        domain: str,
-        authority_level: str,
-        access_status: str,
-        terms_notes: str | None = None,
-    ) -> int:
-        cursor = self.connection.execute(
-            """INSERT INTO sources(name, domain, authority_level, access_status, terms_notes)
-               VALUES (?, ?, ?, ?, ?)""",
-            (name, domain, authority_level, access_status, terms_notes),
-        )
-        self.connection.commit()
-        return int(cursor.lastrowid)
-
-    def archive_snapshot(
-        self,
-        *,
-        source_id: int,
-        source_url: str,
-        raw_content: bytes,
-        media_type: str,
-        retrieved_at: str,
-        publication_at: str | None = None,
-    ) -> int:
-        digest = hashlib.sha256(raw_content).hexdigest()
-        cursor = self.connection.execute(
-            """INSERT INTO source_snapshots(
-                   source_id, source_url, retrieved_at, publication_at,
-                   media_type, sha256, raw_content
-               ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (
-                source_id,
-                source_url,
-                retrieved_at,
-                publication_at,
-                media_type,
-                digest,
-                raw_content,
-            ),
-        )
-        self.connection.commit()
-        return int(cursor.lastrowid)
-
-    def add_issuer(self, canonical_name: str, *, country_code: str = "UZ") -> int:
-        cursor = self.connection.execute(
-            "INSERT INTO issuers(canonical_name, country_code, created_at) VALUES (?, ?, ?)",
-            (canonical_name, country_code, _utc_now()),
-        )
-        self.connection.commit()
-        return int(cursor.lastrowid)
-
-    def add_security(
-        self,
-        *,
-        issuer_id: int,
-        security_class: str,
-        currency: str | None = None,
-    ) -> int:
-        cursor = self.connection.execute(
-            """INSERT INTO securities(issuer_id, security_class, currency, created_at)
-               VALUES (?, ?, ?, ?)""",
-            (issuer_id, security_class, currency, _utc_now()),
-        )
-        self.connection.commit()
-        return int(cursor.lastrowid)
-
-    def add_security_identifier(
-        self,
-        *,
-        security_id: int,
-        identifier_type: str,
-        identifier_value: str,
-        known_at: str,
-        snapshot_id: int,
-        valid_from: str | None = None,
-        valid_to: str | None = None,
-    ) -> int:
-        cursor = self.connection.execute(
-            """INSERT INTO security_identifiers(
-                   security_id, identifier_type, identifier_value, valid_from,
-                   valid_to, known_at, snapshot_id
-               ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (
-                security_id,
-                identifier_type,
-                identifier_value,
-                valid_from,
-                valid_to,
-                known_at,
-                snapshot_id,
-            ),
-        )
-        self.connection.commit()
-        return int(cursor.lastrowid)
-
-    def add_reported_fact(
-        self,
-        *,
-        snapshot_id: int,
-        fact_name: str,
-        known_at: str,
-        value_kind: str,
-        confidence: str,
-        issuer_id: int | None = None,
-        security_id: int | None = None,
-        value_numeric: str | None = None,
-        value_text: str | None = None,
-        unit: str | None = None,
-        currency: str | None = None,
-        valid_at: str | None = None,
-        period_start: str | None = None,
-        period_end: str | None = None,
-    ) -> int:
-        cursor = self.connection.execute(
-            """INSERT INTO reported_facts(
-                   issuer_id, security_id, snapshot_id, fact_name, value_numeric,
-                   value_text, unit, currency, period_start, period_end, valid_at,
-                   known_at, value_kind, confidence
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                issuer_id,
-                security_id,
-                snapshot_id,
-                fact_name,
-                value_numeric,
-                value_text,
-                unit,
-                currency,
-                period_start,
-                period_end,
-                valid_at,
-                known_at,
-                value_kind,
-                confidence,
-            ),
-        )
-        self.connection.commit()
-        return int(cursor.lastrowid)
-
-    def facts_known_at(
-        self,
-        *,
-        as_of: str,
-        fact_name: str | None = None,
-        issuer_id: int | None = None,
-        security_id: int | None = None,
-    ) -> list[dict[str, Any]]:
-        clauses = ["known_at <= ?"]
-        values: list[Any] = [as_of]
-        for column, value in (
-            ("fact_name", fact_name),
-            ("issuer_id", issuer_id),
-            ("security_id", security_id),
-        ):
-            if value is not None:
-                clauses.append(f"{column} = ?")
-                values.append(value)
-        rows = self.connection.execute(
-            f"SELECT * FROM reported_facts WHERE {' AND '.join(clauses)} ORDER BY known_at, fact_id",
-            values,
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    def record_validation_issue(
-        self,
-        *,
-        issue_type: str,
-        severity: str,
-        entity_type: str,
-        details: str,
-        entity_id: int | None = None,
-    ) -> int:
-        cursor = self.connection.execute(
-            """INSERT INTO validation_issues(
-                   issue_type, severity, entity_type, entity_id, detected_at, details
-               ) VALUES (?, ?, ?, ?, ?, ?)""",
-            (issue_type, severity, entity_type, entity_id, _utc_now(), details),
-        )
-        self.connection.commit()
-        return int(cursor.lastrowid)
-
-    def close(self) -> None:
-        self.connection.close()
-
-    def __enter__(self) -> "Repository":
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self.close()
-
+    def ensure_source(self,source_id,name,domain,authority_level,access_status,configuration):
+        self.connection.execute("INSERT INTO data_sources VALUES(?,?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET configuration_json=excluded.configuration_json",(source_id,name,domain,authority_level,access_status,json.dumps(configuration,sort_keys=True))); self.connection.commit()
+    def start_run(self,source_id,parser_version):
+        run_id=str(uuid.uuid4()); self.connection.execute("INSERT INTO ingestion_runs(run_id,source_id,started_at,status,parser_version) VALUES(?,?,?,'RUNNING',?)",(run_id,source_id,utc_now(),parser_version)); self.connection.commit(); return run_id
+    def finish_run(self,run_id,status,records,errors,details=None):
+        self.connection.execute("UPDATE ingestion_runs SET finished_at=?,status=?,records_processed=?,errors=?,error_details=? WHERE run_id=?",(utc_now(),status,records,errors,details,run_id)); self.connection.commit()
+    def add_raw_document(self,values):
+        self.connection.execute("INSERT INTO raw_documents VALUES(?,?,?,?,?,?,?,?,?)",values)
+    def upsert_candidate(self,issuer_id,issuer_name,security_id,security_class,isin,ticker,known_at,document_id):
+        self.connection.execute("INSERT OR IGNORE INTO issuers(issuer_id,legal_name,resolution_method,created_at) VALUES(?,?,?,?)",(issuer_id,issuer_name,"EXACT_SOURCE_DISPLAY_NAME",known_at))
+        self.connection.execute("INSERT OR IGNORE INTO issuer_name_history VALUES(?,?,?,?,?,?,?,?)",(stable_id("name",f"{issuer_id}:{issuer_name}:{known_at}"),issuer_id,issuer_name,"SOURCE_DISPLAY",None,None,known_at,document_id))
+        row=self.connection.execute("SELECT security_class_code FROM securities WHERE security_id=?",(security_id,)).fetchone()
+        if row is None: self.connection.execute("INSERT INTO securities VALUES(?,?,?,?,?,?,?)",(security_id,issuer_id,security_class,"EQUITY",None,"UZS",known_at))
+        elif row[0]=="UNKNOWN" and security_class!="UNKNOWN": self.connection.execute("UPDATE securities SET security_class_code=? WHERE security_id=?",(security_class,security_id))
+        self.connection.execute("INSERT OR IGNORE INTO listings VALUES(?,?,?,?,?,?,?,?,?)",(stable_id("listing",f"{security_id}:UZSE:{known_at}"),security_id,"UZSE","STK","ACTIVE",None,None,known_at,document_id))
+        for kind,value in (("ISIN",isin),("TICKER",ticker)):
+            self.connection.execute("INSERT OR IGNORE INTO identifier_history(identifier_id,entity_type,security_id,identifier_type,identifier_value,known_at,document_id) VALUES(?,'SECURITY',?,?,?,?,?)",(stable_id("identifier",f"{kind}:{value}:{known_at}"),security_id,kind,value,known_at,document_id))
+    def conflict(self,run_id,kind,value,reason):
+        self.connection.execute("INSERT INTO resolution_conflicts VALUES(?,?,?,?,?,'UNRESOLVED',?)",(str(uuid.uuid4()),run_id,kind,value,reason,utc_now()))
+    def counts(self):
+        return {t:self.connection.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in ("issuers","securities","resolution_conflicts")}
+    def close(self): self.connection.close()
+    def __enter__(self): return self
+    def __exit__(self,*_): self.close()
