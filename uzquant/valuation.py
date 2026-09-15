@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .repository import Repository, stable_id, utc_now
 
-MODEL_VERSION = "sector-valuation/1.0.0"
+MODEL_VERSION = "sector-valuation/2.0.0"
 INSUFFICIENT = "VALUATION_INSUFFICIENT"
 D = Decimal
 
@@ -213,7 +213,7 @@ def mining_scenario(production, commodity_price, fx_rate, unit_cost, capex):
 
 
 def _real_reasons(repo: Repository, security_id: str, sector: str, as_of: date) -> tuple[list[str], list[str], list[str], dict]:
-    docs = repo.connection.execute("SELECT document_id,currency,reporting_perimeter FROM financial_documents WHERE issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?) AND publication_date<=? ORDER BY period_end DESC,publication_date DESC", (security_id,as_of.isoformat())).fetchall()
+    docs = repo.connection.execute("SELECT d.document_id,d.currency,d.reporting_perimeter FROM financial_documents d LEFT JOIN financial_document_entity_checks c USING(document_id) WHERE d.issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?) AND d.publication_date<=? AND coalesce(c.validation_status,'MATCHED')='MATCHED' ORDER BY d.period_end DESC,d.publication_date DESC", (security_id,as_of.isoformat())).fetchall()
     reasons, document_ids = [], [r[0] for r in docs]
     if not docs: reasons.append("NO_FINANCIAL_DOCUMENT")
     else:
@@ -234,23 +234,40 @@ def _real_reasons(repo: Repository, security_id: str, sector: str, as_of: date) 
         reasons.append("PREFERRED_SECURITY_RIGHTS_UNVERIFIED")
     observations = [r[0] for r in repo.connection.execute("SELECT observation_id FROM financial_observations WHERE document_id IN (%s)" % (",".join("?" * len(docs)) if docs else "NULL"), document_ids)] if docs else []
     latest = {}
-    for concept,value,currency,unit,oid,document_id in repo.connection.execute("SELECT o.canonical_concept,o.normalized_value,o.currency,o.unit,o.observation_id,o.document_id FROM financial_observations o JOIN financial_documents d USING(document_id) WHERE o.issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?) AND d.publication_date<=? ORDER BY o.period_end DESC,d.publication_date DESC",(security_id,as_of.isoformat())):
+    for concept,value,currency,unit,oid,document_id in repo.connection.execute("SELECT o.canonical_concept,o.normalized_value,o.currency,o.unit,o.observation_id,o.document_id FROM financial_observations o JOIN financial_documents d USING(document_id) LEFT JOIN financial_document_entity_checks c USING(document_id) WHERE o.issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?) AND d.publication_date<=? AND coalesce(c.validation_status,'MATCHED')='MATCHED' ORDER BY o.period_end DESC,d.publication_date DESC",(security_id,as_of.isoformat())):
         latest.setdefault(concept,{"value":value,"currency":currency,"unit":unit,"observation_id":oid,"document_id":document_id})
     assembled={"latest_concepts":latest,"share_capital_observation_id":share[0] if share else None,"class_shares_outstanding":share[1] if share else None}
+    if docs and not latest:
+        reasons.extend(("NO_NORMALIZED_FINANCIAL_INPUTS","UNVERIFIED_FINANCIAL_UNIT"))
     return sorted(set(reasons)), document_ids, observations, assembled
 
 
 def run_real_validation(database: Path, valuation_date: date = date(2026, 9, 15)):
+    from .remediation_b import record_model_attempt
     tickers = ("AGMKP", "KASUP", "IPKY", "UZTL", "QZSM")
     with Repository(database) as repo:
         repo.initialize()
         rows = repo.connection.execute("SELECT h.identifier_value,s.security_id,s.issuer_id,i.sector,coalesce((SELECT source_url FROM financial_documents WHERE issuer_id=i.issuer_id ORDER BY publication_date DESC LIMIT 1),'') source_url FROM identifier_history h JOIN securities s ON s.security_id=h.security_id JOIN issuers i ON i.issuer_id=s.issuer_id WHERE h.identifier_type='TICKER' AND h.identifier_value IN (?,?,?,?,?) GROUP BY h.identifier_value,s.security_id", tickers).fetchall()
         results = []
         for row in rows:
-            source_sector = "BANK" if "/bank/" in row[4] else "INSURANCE" if "/insurance/" in row[4] else (row[3] or "GENERAL")
+            source_sector = {"IPKY":"BANK","KASUP":"INSURANCE","AGMKP":"MINING"}.get(row[0],row[3] or "GENERAL")
             engine, methods = route_valuation(source_sector)
             method = methods[0]
             reasons, docs, observations, assembled = _real_reasons(repo, row[1], engine, valuation_date)
+            for candidate in methods:
+                method_missing=list(reasons)
+                if candidate not in {"INDUSTRIAL_DCF","MINING_SCENARIO_DCF"}:
+                    method_missing=[r for r in method_missing if r not in {"MISSING_CAPEX","MISSING_D&A","MISSING_OPERATING_CASH_FLOW"}]
+                if candidate in {"P/B","P/TBV","ROE_ADJUSTED_P/B"}:
+                    if "Equity" not in assembled["latest_concepts"]: method_missing.append("MISSING_EQUITY")
+                    method_missing.append("MISSING_VERIFIED_PEER_MULTIPLE")
+                elif candidate=="P/E":
+                    if "Net Income" not in assembled["latest_concepts"]: method_missing.append("MISSING_NET_INCOME")
+                    method_missing.append("MISSING_VERIFIED_PEER_MULTIPLE")
+                elif candidate in {"RESIDUAL_INCOME","DDM"}: method_missing.append("MISSING_SOURCEABLE_COST_OF_EQUITY_ASSUMPTIONS")
+                elif candidate in {"INDUSTRIAL_DCF","MINING_SCENARIO_DCF"}: method_missing.append("MISSING_SOURCEABLE_DISCOUNT_RATE_ASSUMPTIONS")
+                else: method_missing.append("MISSING_VERIFIED_RELATIVE_VALUATION_ASSUMPTIONS")
+                record_model_attempt(repo,row[1],valuation_date,candidate,sorted(set(method_missing)),[],docs+observations)
             vid = stable_id("valuation", f"{row[1]}:{valuation_date}:{method}:{MODEL_VERSION}")
             assumptions={"country_risk":"REQUIRED_NOT_AVAILABLE","model_requirements_checked":True,"no_assumptions_invented":True}
             values = (vid,row[1],row[2],valuation_date.isoformat(),valuation_date.isoformat(),json.dumps({"document_ids":docs,"assembled":assembled},sort_keys=True),method,engine,None,json.dumps(assumptions,sort_keys=True),None,None,None,"UNAVAILABLE",MODEL_VERSION,INSUFFICIENT,json.dumps(reasons),json.dumps(docs),json.dumps(observations),utc_now())

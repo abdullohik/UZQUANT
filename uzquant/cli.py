@@ -18,9 +18,10 @@ from .backtesting import run_backtest_readiness
 from .model_validation import run_model_validation
 from .portfolio import run_sample_portfolios
 from .remediation import record_market_coverage_blocker,record_preferred_rights_assessments,record_share_capital_evidence
+from .remediation_b import run_remediation_b_evidence
 def main(argv=None):
     parser=argparse.ArgumentParser(prog="uzquant"); sub=parser.add_subparsers(dest="command",required=True)
-    sub.add_parser("init-db"); sub.add_parser("update-security-master"); sub.add_parser("update-market-data"); sub.add_parser("update-financial-documents"); sub.add_parser("calculate-fundamentals"); sub.add_parser("update-corporate-intelligence"); sub.add_parser("update-events"); sub.add_parser("update-macro"); sub.add_parser("export-macro"); sub.add_parser("run-valuations"); sub.add_parser("rank-universe"); sub.add_parser("size-positions"); sub.add_parser("assess-execution"); sub.add_parser("run-backtests"); sub.add_parser("validate-model"); sub.add_parser("construct-portfolios"); sub.add_parser("remediation-a-evidence"); liquidity=sub.add_parser("assess-liquidity"); liquidity.add_argument("--position-shares",default="10000"); liquidity.add_argument("--participation-rate",default="0.10"); query=sub.add_parser("query-fundamentals"); query.add_argument("--ticker",required=True)
+    sub.add_parser("init-db"); sub.add_parser("update-security-master"); sub.add_parser("update-market-data"); sub.add_parser("update-financial-documents"); sub.add_parser("calculate-fundamentals"); sub.add_parser("update-corporate-intelligence"); sub.add_parser("update-events"); sub.add_parser("update-macro"); sub.add_parser("export-macro"); sub.add_parser("run-valuations"); sub.add_parser("rank-universe"); sub.add_parser("size-positions"); sub.add_parser("assess-execution"); sub.add_parser("run-backtests"); sub.add_parser("validate-model"); sub.add_parser("construct-portfolios"); sub.add_parser("remediation-a-evidence"); sub.add_parser("remediation-b-evidence"); liquidity=sub.add_parser("assess-liquidity"); liquidity.add_argument("--position-shares",default="10000"); liquidity.add_argument("--participation-rate",default="0.10"); query=sub.add_parser("query-fundamentals"); query.add_argument("--ticker",required=True)
     args=parser.parse_args(argv); configure_logging(); settings=Settings.from_env()
     if args.command=="init-db":
         settings.database_path.parent.mkdir(parents=True,exist_ok=True)
@@ -32,6 +33,7 @@ def main(argv=None):
     elif args.command=="calculate-fundamentals": result={"status":"SUCCEEDED",**calculate_all(settings.database_path)}
     elif args.command=="update-corporate-intelligence": result=ingest_corporate_intelligence(settings)
     elif args.command=="remediation-a-evidence": result={"status":"SUCCEEDED","share_capital":record_share_capital_evidence(settings.database_path),"preferred_rights":record_preferred_rights_assessments(settings.database_path),"market_coverage":record_market_coverage_blocker(settings.database_path)}
+    elif args.command=="remediation-b-evidence": result={"status":"SUCCEEDED",**run_remediation_b_evidence(settings.database_path)}
     elif args.command=="update-events": result={"status":"SUCCEEDED",**ingest_archived_events(settings.database_path)}
     elif args.command=="update-macro": result=ingest_macro(settings)
     elif args.command=="export-macro": result={"status":"SUCCEEDED",**export_macro_outputs(settings.database_path,__import__('pathlib').Path("outputs/macro_history.csv"),__import__('pathlib').Path("outputs/sector_macro_mapping.csv"))}

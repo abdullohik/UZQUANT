@@ -205,12 +205,12 @@ def score_real_universe(database: Path, as_of: date=date(2026,9,15)):
         output=[]
         for s in securities:
             sid,issuer_id,security_class,ticker=s
-            docs=repo.connection.execute("SELECT document_id FROM financial_documents WHERE issuer_id=? AND publication_date<=?",(issuer_id,as_of.isoformat())).fetchall()
+            docs=repo.connection.execute("SELECT d.document_id FROM financial_documents d LEFT JOIN financial_document_entity_checks c USING(document_id) WHERE d.issuer_id=? AND d.publication_date<=? AND coalesce(c.validation_status,'MATCHED')='MATCHED'",(issuer_id,as_of.isoformat())).fetchall()
             observations=repo.connection.execute("SELECT count(*) FROM market_observations WHERE security_id=? AND trade_date<=? AND series_type='RAW_OBSERVED'",(sid,as_of.isoformat())).fetchone()[0]
             rights=repo.connection.execute("SELECT rights_id,rights_confidence FROM security_rights WHERE security_id=? AND disclosure_date<=? ORDER BY disclosure_date DESC LIMIT 1",(sid,as_of.isoformat())).fetchone()
             ownership=repo.connection.execute("SELECT count(*) FROM ownership_positions WHERE issuer_id=? AND disclosure_date<=? AND ownership_percentage IS NOT NULL",(issuer_id,as_of.isoformat())).fetchone()[0]
             conflicts=repo.connection.execute("SELECT count(*) FROM financial_validation_issues v JOIN financial_documents d USING(document_id) WHERE d.issuer_id=? AND v.issue_type LIKE '%CONFLICT%'",(issuer_id,)).fetchone()[0]
-            valuation=repo.connection.execute("SELECT valuation_id,status FROM valuation_records WHERE security_id=? AND data_cutoff_date<=? ORDER BY created_at DESC LIMIT 1",(sid,as_of.isoformat())).fetchone()
+            valuation=repo.connection.execute("SELECT valuation_id,status,base_value FROM valuation_records WHERE security_id=? AND data_cutoff_date<=? ORDER BY created_at DESC LIMIT 1",(sid,as_of.isoformat())).fetchone()
             liq=repo.connection.execute("SELECT assessment_id,liquidity_state,liquidity_confidence,hard_flags_json FROM liquidity_assessments WHERE security_id=? AND as_of_date<=? AND participation_rate='0.10' AND position_shares='10000' ORDER BY as_of_date DESC LIMIT 1",(sid,as_of.isoformat())).fetchone()
             ocr=bool(repo.connection.execute("SELECT 1 FROM financial_observations WHERE issuer_id=? AND extraction_method='OCR' LIMIT 1",(issuer_id,)).fetchone())
             verified_shares=bool(repo.connection.execute("SELECT 1 FROM share_capital_observations WHERE security_id=? AND disclosure_date<=? AND effective_date<=? AND verification_status='VERIFIED' AND class_shares_outstanding IS NOT NULL LIMIT 1",(sid,as_of.isoformat(),as_of.isoformat())).fetchone())
@@ -218,7 +218,13 @@ def score_real_universe(database: Path, as_of: date=date(2026,9,15)):
             dq=data_quality_score(evidence); lq=liquidity_score(liq[1] if liq else None,liq[2] if liq else None,liq[0] if liq else None)
             factors={name:_unavailable(name,"INSUFFICIENT_VERIFIED_INPUTS") for name in FACTORS}
             factors["Data Quality"]=dq; factors["Liquidity"]=lq
-            factors["Valuation"]=_unavailable("Valuation","VALUATION_INSUFFICIENT",(valuation[0],) if valuation else ())
+            if valuation and valuation[1]=="AVAILABLE" and valuation[2] is not None:
+                price=repo.connection.execute("SELECT coalesce(close,last,individual_trade_price) FROM market_observations WHERE security_id=? AND trade_date<=? ORDER BY trade_date DESC LIMIT 1",(sid,as_of.isoformat())).fetchone()
+                if price and price[0] and D(str(price[0]))>0:
+                    upside=D(valuation[2])/D(str(price[0]))-D("1")
+                    score=max(D("0"),min(D("100"),D("50")+upside*D("100")))
+                    factors["Valuation"]=FactorScore("Valuation",{"valuation_id":valuation[0],"base_value":valuation[2],"price":str(price[0]),"upside":str(upside)},"ABSOLUTE_UPSIDE_SCORE_50_PLUS_100X_UPSIDE_CAPPED_0_100",score,source_ids=(valuation[0],))
+            else: factors["Valuation"]=_unavailable("Valuation","VALUATION_INSUFFICIENT",(valuation[0],) if valuation else ())
             sector_row=repo.connection.execute("SELECT coalesce(i.sector,'GENERAL'),coalesce((SELECT source_url FROM financial_documents WHERE issuer_id=i.issuer_id ORDER BY publication_date DESC LIMIT 1),'') FROM issuers i WHERE issuer_id=?",(issuer_id,)).fetchone()
             routed_sector="BANK" if "/bank/" in sector_row[1] else "INSURANCE" if "/insurance/" in sector_row[1] else sector_row[0]
             metrics=sector_factor_metrics(routed_sector)

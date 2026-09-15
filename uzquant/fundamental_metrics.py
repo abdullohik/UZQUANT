@@ -146,7 +146,14 @@ def calculate_document(repo:Repository,document_id:str):
     repo.connection.commit(); return engine,results,quality,flags
 def calculate_all(database):
     with Repository(database) as repo:
-        repo.initialize(); documents=[r[0] for r in repo.connection.execute("SELECT document_id FROM financial_documents")]
+        repo.initialize()
+        bad=[r[0] for r in repo.connection.execute("SELECT document_id FROM financial_document_entity_checks WHERE validation_status='MISMATCH'")]
+        if bad:
+            marks=','.join('?' for _ in bad)
+            repo.connection.execute(f"DELETE FROM fundamental_metrics WHERE document_id IN ({marks})",bad)
+            repo.connection.execute(f"DELETE FROM accounting_quality_flags WHERE document_id IN ({marks})",bad)
+            repo.connection.commit()
+        documents=[r[0] for r in repo.connection.execute("SELECT d.document_id FROM financial_documents d LEFT JOIN financial_document_entity_checks c USING(document_id) WHERE coalesce(c.validation_status,'MATCHED')='MATCHED'")]
         counts={"documents":len(documents),"available":0,"unavailable":0,"triggered_flags":0}
         for document_id in documents:
             _,results,quality,flags=calculate_document(repo,document_id)
