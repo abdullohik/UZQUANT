@@ -212,8 +212,8 @@ def mining_scenario(production, commodity_price, fx_rate, unit_cost, capex):
     return production * commodity_price * fx_rate - production * unit_cost - capex
 
 
-def _real_reasons(repo: Repository, security_id: str, sector: str) -> tuple[list[str], list[str], list[str]]:
-    docs = repo.connection.execute("SELECT document_id,currency,reporting_perimeter FROM financial_documents WHERE issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?) ORDER BY publication_date DESC", (security_id,)).fetchall()
+def _real_reasons(repo: Repository, security_id: str, sector: str, as_of: date) -> tuple[list[str], list[str], list[str], dict]:
+    docs = repo.connection.execute("SELECT document_id,currency,reporting_perimeter FROM financial_documents WHERE issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?) AND publication_date<=? ORDER BY period_end DESC,publication_date DESC", (security_id,as_of.isoformat())).fetchall()
     reasons, document_ids = [], [r[0] for r in docs]
     if not docs: reasons.append("NO_FINANCIAL_DOCUMENT")
     else:
@@ -222,7 +222,8 @@ def _real_reasons(repo: Repository, security_id: str, sector: str) -> tuple[list
         if len(docs) < 2: reasons.append("INSUFFICIENT_FINANCIAL_HISTORY")
         unit_unknown = repo.connection.execute("SELECT 1 FROM financial_observations WHERE document_id IN (%s) AND unit='SOURCE_UNIT_UNSPECIFIED' LIMIT 1" % ",".join("?" * len(docs)), document_ids).fetchone()
         if unit_unknown: reasons.append("UNVERIFIED_FINANCIAL_UNIT")
-    reasons.append("MISSING_VERIFIED_TOTAL_SHARES_OUTSTANDING")
+    share = repo.connection.execute("SELECT observation_id,class_shares_outstanding,currency FROM share_capital_observations WHERE security_id=? AND disclosure_date<=? AND effective_date<=? AND verification_status='VERIFIED' AND class_shares_outstanding IS NOT NULL ORDER BY effective_date DESC,disclosure_date DESC LIMIT 1",(security_id,as_of.isoformat(),as_of.isoformat())).fetchone()
+    if not share: reasons.append("MISSING_VERIFIED_CLASS_SHARES_OUTSTANDING")
     if sector in {"GENERAL", "MINING"}:
         concepts = {r[0] for r in repo.connection.execute("SELECT DISTINCT canonical_concept FROM financial_observations WHERE issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?)", (security_id,))}
         for concept in ("Operating Cash Flow", "CapEx", "D&A"):
@@ -232,23 +233,28 @@ def _real_reasons(repo: Repository, security_id: str, sector: str) -> tuple[list
     if klass and klass[0] == "PREFERRED" and (not rights or rights[0] != "HIGH" or not rights[2]):
         reasons.append("PREFERRED_SECURITY_RIGHTS_UNVERIFIED")
     observations = [r[0] for r in repo.connection.execute("SELECT observation_id FROM financial_observations WHERE document_id IN (%s)" % (",".join("?" * len(docs)) if docs else "NULL"), document_ids)] if docs else []
-    return sorted(set(reasons)), document_ids, observations
+    latest = {}
+    for concept,value,currency,unit,oid,document_id in repo.connection.execute("SELECT o.canonical_concept,o.normalized_value,o.currency,o.unit,o.observation_id,o.document_id FROM financial_observations o JOIN financial_documents d USING(document_id) WHERE o.issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?) AND d.publication_date<=? ORDER BY o.period_end DESC,d.publication_date DESC",(security_id,as_of.isoformat())):
+        latest.setdefault(concept,{"value":value,"currency":currency,"unit":unit,"observation_id":oid,"document_id":document_id})
+    assembled={"latest_concepts":latest,"share_capital_observation_id":share[0] if share else None,"class_shares_outstanding":share[1] if share else None}
+    return sorted(set(reasons)), document_ids, observations, assembled
 
 
 def run_real_validation(database: Path, valuation_date: date = date(2026, 9, 15)):
     tickers = ("AGMKP", "KASUP", "IPKY", "UZTL", "QZSM")
     with Repository(database) as repo:
         repo.initialize()
-        rows = repo.connection.execute("SELECT DISTINCT h.identifier_value,s.security_id,s.issuer_id,i.sector,coalesce(fd.source_url,'') source_url FROM identifier_history h JOIN securities s ON s.security_id=h.security_id JOIN issuers i ON i.issuer_id=s.issuer_id LEFT JOIN financial_documents fd ON fd.issuer_id=i.issuer_id WHERE h.identifier_type='TICKER' AND h.identifier_value IN (?,?,?,?,?)", tickers).fetchall()
+        rows = repo.connection.execute("SELECT h.identifier_value,s.security_id,s.issuer_id,i.sector,coalesce((SELECT source_url FROM financial_documents WHERE issuer_id=i.issuer_id ORDER BY publication_date DESC LIMIT 1),'') source_url FROM identifier_history h JOIN securities s ON s.security_id=h.security_id JOIN issuers i ON i.issuer_id=s.issuer_id WHERE h.identifier_type='TICKER' AND h.identifier_value IN (?,?,?,?,?) GROUP BY h.identifier_value,s.security_id", tickers).fetchall()
         results = []
         for row in rows:
             source_sector = "BANK" if "/bank/" in row[4] else "INSURANCE" if "/insurance/" in row[4] else (row[3] or "GENERAL")
             engine, methods = route_valuation(source_sector)
             method = methods[0]
-            reasons, docs, observations = _real_reasons(repo, row[1], engine)
+            reasons, docs, observations, assembled = _real_reasons(repo, row[1], engine, valuation_date)
             vid = stable_id("valuation", f"{row[1]}:{valuation_date}:{method}:{MODEL_VERSION}")
-            values = (vid,row[1],row[2],valuation_date.isoformat(),valuation_date.isoformat(),json.dumps({"document_ids":docs}),method,engine,None,json.dumps({"country_risk":"REQUIRED_NOT_AVAILABLE","model_requirements_checked":True},sort_keys=True),None,None,None,"UNAVAILABLE",MODEL_VERSION,INSUFFICIENT,json.dumps(reasons),json.dumps(docs),json.dumps(observations),utc_now())
+            assumptions={"country_risk":"REQUIRED_NOT_AVAILABLE","model_requirements_checked":True,"no_assumptions_invented":True}
+            values = (vid,row[1],row[2],valuation_date.isoformat(),valuation_date.isoformat(),json.dumps({"document_ids":docs,"assembled":assembled},sort_keys=True),method,engine,None,json.dumps(assumptions,sort_keys=True),None,None,None,"UNAVAILABLE",MODEL_VERSION,INSUFFICIENT,json.dumps(reasons),json.dumps(docs),json.dumps(observations),utc_now())
             repo.connection.execute("INSERT INTO valuation_records VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(security_id,valuation_date,method,valuation_model_version) DO UPDATE SET financial_period_inputs_json=excluded.financial_period_inputs_json,assumptions_json=excluded.assumptions_json,status=excluded.status,insufficiency_reasons_json=excluded.insufficiency_reasons_json,source_document_ids_json=excluded.source_document_ids_json,source_observation_ids_json=excluded.source_observation_ids_json,created_at=excluded.created_at", values)
-            results.append({"ticker":row[0],"security_id":row[1],"engine":engine,"method":method,"status":INSUFFICIENT,"reasons":reasons,"source_document_ids":docs})
+            results.append({"ticker":row[0],"security_id":row[1],"engine":engine,"method":method,"status":INSUFFICIENT,"reasons":reasons,"available_inputs":sorted(assembled["latest_concepts"]),"required_share_input":"VERIFIED_CLASS_SHARES_OUTSTANDING","source_document_ids":docs})
         repo.connection.commit()
         return sorted(results,key=lambda r:r["ticker"])

@@ -13,6 +13,8 @@ class FinancialTests(unittest.TestCase):
   rows=parse_statement_rows(FIXTURE); self.assertEqual(len(rows),1); self.assertEqual(rows[0].raw_value,"1 000,00")
  def test_multilingual_taxonomy(self):
   self.assertEqual(map_concept("Чистая прибыль"),"Net Income"); self.assertEqual(map_concept("Sotishdan sof tushum"),"Revenue"); self.assertIsNone(map_concept("Unmapped custom row"))
+  self.assertEqual(map_concept("Net interest income"),"Net Interest Income")
+  self.assertEqual(map_concept("Страховые резервы"),"Insurance Reserves")
  def test_point_in_time_excludes_later_publication(self):
   with tempfile.TemporaryDirectory() as td:
    repo=Repository(Path(td)/"x.db"); repo.initialize()

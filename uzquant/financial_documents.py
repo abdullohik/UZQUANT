@@ -9,14 +9,21 @@ from .financial_taxonomy import map_concept
 from .repository import Repository,stable_id,utc_now
 from .rse import fetch
 
-PARSER_VERSION="openinfo-financial-html/1.0.0"
+PARSER_VERSION="openinfo-financial-html/1.1.0"
 SOURCE_ID="openinfo-disclosure"
 REPORTS=(
- ("AGMK","jsc/quarter/18364","2026-01-01","2026-03-31","2026-05-01"),
- ("KASUP","insurance/quarter/361","2023-04-01","2023-06-30","2023-07-26"),
- ("IPKY","bank/quarter/1257","2026-01-01","2026-03-31","2026-04-27"),
- ("UZTL","jsc/annual/6116","2025-01-01","2025-12-31","2026-07-10"),
- ("QZSM","jsc/quarter/18437","2026-01-01","2026-03-31","2026-05-13"),
+ # ticker, portal path, period, publication, perimeter, standard, audit, currency, unit
+ ("AGMK","jsc/annual/5218","2023-01-01","2023-12-31","2024-09-25","UNKNOWN","LOCAL_STATUTORY","AUDITED","UZS","SOURCE_UNIT_UNSPECIFIED"),
+ ("AGMK","jsc/quarter/18364","2026-01-01","2026-03-31","2026-05-01","UNKNOWN","LOCAL_STATUTORY","UNAUDITED","UZS","SOURCE_UNIT_UNSPECIFIED"),
+ ("KASUP","insurance/annual/168","2023-01-01","2023-12-31","2024-03-19","UNKNOWN","LOCAL_STATUTORY","AUDITED","UZS","SOURCE_UNIT_UNSPECIFIED"),
+ ("KASUP","insurance/quarter/692","2025-01-01","2025-09-30","2025-11-03","UNKNOWN","LOCAL_STATUTORY","UNAUDITED","UZS","SOURCE_UNIT_UNSPECIFIED"),
+ ("KASUP","insurance/quarter/361","2023-01-01","2023-06-30","2023-07-26","UNKNOWN","LOCAL_STATUTORY","UNAUDITED","UZS","SOURCE_UNIT_UNSPECIFIED"),
+ ("IPKY","bank/annual/296","2022-01-01","2022-12-31","2023-07-10","CONSOLIDATED","IFRS","AUDITED","UZS","SOURCE_UNIT_UNSPECIFIED"),
+ ("IPKY","bank/quarter/1257","2026-01-01","2026-03-31","2026-04-27","UNKNOWN","LOCAL_STATUTORY","UNAUDITED","UZS","SOURCE_UNIT_UNSPECIFIED"),
+ ("UZTL","jsc/annual/5548","2024-01-01","2024-12-31","2025-07-09","UNKNOWN","LOCAL_STATUTORY","AUDITED","UZS","SOURCE_UNIT_UNSPECIFIED"),
+ ("UZTL","jsc/annual/6116","2025-01-01","2025-12-31","2026-07-10","UNKNOWN","LOCAL_STATUTORY","AUDITED","UZS","SOURCE_UNIT_UNSPECIFIED"),
+ ("QZSM","jsc/annual/5176","2023-01-01","2023-12-31","2024-07-24","UNKNOWN","LOCAL_STATUTORY","AUDITED","UZS","SOURCE_UNIT_UNSPECIFIED"),
+ ("QZSM","jsc/quarter/18437","2026-01-01","2026-03-31","2026-05-13","UNKNOWN","LOCAL_STATUTORY","UNAUDITED","UZS","SOURCE_UNIT_UNSPECIFIED"),
 )
 @dataclass(frozen=True)
 class ParsedRow:
@@ -66,7 +73,7 @@ def _issuer_for_ticker(repo,ticker):
     row=repo.connection.execute("SELECT s.issuer_id,i.legal_name FROM identifier_history h JOIN securities s ON s.security_id=h.security_id JOIN issuers i ON i.issuer_id=s.issuer_id WHERE h.identifier_type='TICKER' AND h.identifier_value=? ORDER BY h.known_at DESC LIMIT 1",(ticker,)).fetchone()
     if not row: raise ValueError(f"ticker absent from approved security master: {ticker}")
     return row
-def _save(repo,run_id,ticker,path_bits,period_start,period_end,published,content,raw_dir,url):
+def _save(repo,run_id,ticker,path_bits,period_start,period_end,published,perimeter,standard,audit,currency,unit,content,raw_dir,url):
     issuer=_issuer_for_ticker(repo,ticker); digest=hashlib.sha256(content).hexdigest(); source_identifier=path_bits.rsplit('/',1)[-1]
     raw_id=stable_id("raw-financial",f"{url}:{digest}"); document_id=stable_id("financial-document",f"{SOURCE_ID}:{source_identifier}:{digest}")
     raw_dir.mkdir(parents=True,exist_ok=True); storage=raw_dir/f"{raw_id}.html"
@@ -74,7 +81,7 @@ def _save(repo,run_id,ticker,path_bits,period_start,period_end,published,content
     repo.connection.execute("INSERT OR IGNORE INTO raw_documents VALUES(?,?,?,?,?,?,?,?,?)",(raw_id,SOURCE_ID,run_id,url,utc_now(),published,"text/html",digest,str(storage)))
     prior=repo.connection.execute("SELECT document_id FROM financial_documents WHERE source_id=? AND source_identifier=? AND content_hash<>? ORDER BY retrieved_at DESC LIMIT 1",(SOURCE_ID,source_identifier,digest)).fetchone()
     revision_status,revises=("REVISED",prior[0]) if prior else ("ORIGINAL",None)
-    repo.connection.execute("INSERT OR IGNORE INTO financial_documents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(document_id,issuer[0],raw_id,issuer[1],"UNKNOWN",period_start,period_end,published,None,"ANNUAL" if "/annual/" in path_bits else "QUARTERLY","HTML","UNKNOWN","UNKNOWN",None,SOURCE_ID,url,source_identifier,utc_now(),digest,PARSER_VERSION,revision_status,revises))
+    repo.connection.execute("INSERT INTO financial_documents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_id,source_identifier,content_hash) DO UPDATE SET reporting_perimeter=excluded.reporting_perimeter,period_start=excluded.period_start,period_end=excluded.period_end,publication_date=excluded.publication_date,accounting_standard=excluded.accounting_standard,audit_status=excluded.audit_status,currency=excluded.currency,parser_version=excluded.parser_version",(document_id,issuer[0],raw_id,issuer[1],perimeter,period_start,period_end,published,None,"ANNUAL" if "/annual/" in path_bits else "QUARTERLY","HTML",standard,audit,currency,SOURCE_ID,url,source_identifier,utc_now(),digest,PARSER_VERSION,revision_status,revises))
     rows=parse_statement_rows(content); normalized=0
     for row in rows:
         rid=stable_id("financial-raw",f"{document_id}:{row.location}")
@@ -82,7 +89,7 @@ def _save(repo,run_id,ticker,path_bits,period_start,period_end,published,content
         concept=map_concept(row.label); number=parse_decimal(row.raw_value)
         if concept and number is not None:
             oid=stable_id("financial-observation",f"{document_id}:{concept}:{row.location}")
-            repo.connection.execute("INSERT OR IGNORE INTO financial_observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(oid,document_id,issuer[0],row.statement_type,concept,period_start,period_end,row.raw_value,str(number),None,"SOURCE_UNIT_UNSPECIFIED","AS_REPORTED",row.location,"STRUCTURED_HTML","HIGH","REPORTED")); normalized+=1
+            repo.connection.execute("INSERT INTO financial_observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(document_id,canonical_concept,period_end,source_location) DO UPDATE SET normalized_value=excluded.normalized_value,currency=excluded.currency,unit=excluded.unit,confidence=excluded.confidence",(oid,document_id,issuer[0],row.statement_type,concept,period_start,period_end,row.raw_value,str(number),currency,unit,"AS_REPORTED",row.location,"STRUCTURED_HTML","HIGH","REPORTED")); normalized+=1
     _validate(repo,document_id)
     return len(rows),normalized
 def _validate(repo,document_id):
@@ -107,11 +114,11 @@ def point_in_time(repo,issuer_id,concept,as_of):
 def ingest_financial_documents(settings):
     with Repository(settings.database_path) as repo:
         repo.initialize(); repo.ensure_source(SOURCE_ID,"Openinfo Corporate Disclosure Portal","openinfo.uz","PRIMARY","VERIFIED_AUTOMATED",{"format":"structured HTML","attribution_required":True}); run=repo.start_run(SOURCE_ID,PARSER_VERSION); docs=raw=normalized=errors=0; failures=[]
-        for ticker,bits,start,end,published in REPORTS:
+        for ticker,bits,start,end,published,perimeter,standard,audit,currency,unit in REPORTS:
             url=f"https://openinfo.uz/en/reports/{bits}"
             try:
                 content=fetch(url,timeout=settings.request_timeout_seconds,attempts=settings.retry_attempts,backoff=settings.retry_backoff_seconds)
-                r,n=_save(repo,run,ticker,bits,start,end,published,content,settings.raw_data_dir/"openinfo"/ticker,url); raw+=r; normalized+=n; docs+=1; repo.connection.commit()
+                r,n=_save(repo,run,ticker,bits,start,end,published,perimeter,standard,audit,currency,unit,content,settings.raw_data_dir/"openinfo"/ticker,url); raw+=r; normalized+=n; docs+=1; repo.connection.commit()
             except Exception as exc: errors+=1; failures.append(f"{ticker}: {exc}")
         status="SUCCEEDED" if not errors else ("PARTIAL" if docs else "FAILED"); repo.finish_run(run,status,docs,errors,"; ".join(failures) or None)
         return {"status":status,"documents":docs,"raw_values":raw,"normalized_observations":normalized,"errors":failures}

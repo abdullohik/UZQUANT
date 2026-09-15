@@ -8,6 +8,7 @@ class DatabaseTests(unittest.TestCase):
                 repo.initialize(); repo.initialize()
                 tables={r[0] for r in repo.connection.execute("select name from sqlite_master where type='table'")}
                 self.assertTrue({"issuers","securities","security_classes","listings","identifier_history","data_sources","ingestion_runs"}<=tables)
+                self.assertTrue({"share_capital_observations","source_coverage_audits"}<=tables)
     def test_stable_ids_are_reproducible_and_isin_based(self):
         self.assertEqual(stable_id("security","isin:UZ000"),stable_id("security","isin:UZ000"))
         self.assertNotEqual(stable_id("security","isin:UZ000"),stable_id("security","ticker:TEST"))

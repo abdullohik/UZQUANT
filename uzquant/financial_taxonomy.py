@@ -1,7 +1,7 @@
 from __future__ import annotations
 import re
 
-CANONICAL_CONCEPTS=("Revenue","COGS","Gross Profit","Operating Expenses","EBITDA","D&A","EBIT","Interest Expense","Pretax Income","Taxes","Net Income","Minority Interest","EPS","Cash","Receivables","Inventory","Current Assets","PP&E","Investments","Intangibles","Other Assets","Total Assets","Accounts Payable","Short-Term Debt","Long-Term Debt","Other Liabilities","Total Liabilities","Share Capital","Retained Earnings","Equity","Operating Cash Flow","CapEx","Investing Cash Flow","Financing Cash Flow","Dividends","Free Cash Flow")
+CANONICAL_CONCEPTS=("Revenue","COGS","Gross Profit","Operating Expenses","EBITDA","D&A","EBIT","Interest Expense","Pretax Income","Taxes","Net Income","Minority Interest","EPS","Cash","Receivables","Inventory","Current Assets","PP&E","Investments","Intangibles","Other Assets","Total Assets","Accounts Payable","Short-Term Debt","Long-Term Debt","Other Liabilities","Total Liabilities","Share Capital","Retained Earnings","Equity","Operating Cash Flow","CapEx","Investing Cash Flow","Financing Cash Flow","Dividends","Free Cash Flow","Loans","Deposits","Net Interest Income","Average Earning Assets","Nonperforming Loans","Loan Loss Provisions","Regulatory Capital","Risk Weighted Assets","Non-Interest Income","Premiums","Claims","Underwriting Expenses","Investment Income","Insurance Reserves","Available Solvency Capital","Required Solvency Capital")
 
 # Shared phrase rules: English plus Russian and Uzbek labels. Specific source row codes
 # are deliberately not used because their meanings differ across report templates.
@@ -37,6 +37,23 @@ RULES=(
  ("Financing Cash Flow",r"net cash.*financing|финансов.*денеж|moliyaviy.*pul"),
  ("CapEx",r"capital expenditures|капитальн.*затрат|kapital xarajat"),
  ("Dividends",r"^dividends$|^дивиденды$|^dividendlar$"),
+ ("D&A",r"depreciation and amorti|амортизац|amortizats"),
+ ("Loans",r"^loans(?: to customers)?(?:, net)?$|кредит.*клиент|mijoz.*kredit"),
+ ("Deposits",r"customer deposits|deposits from customers|средства клиентов|депозит.*клиент|mijoz.*depozit"),
+ ("Net Interest Income",r"net interest income|чист.*процентн.*доход|sof foizli daromad"),
+ ("Average Earning Assets",r"average interest.earning assets|средн.*доходн.*актив"),
+ ("Nonperforming Loans",r"non.?performing loans|проблемн.*кредит|npl"),
+ ("Loan Loss Provisions",r"loan loss provision|impairment.*loans|резерв.*кредит"),
+ ("Regulatory Capital",r"regulatory capital|регулятивн.*капитал|regulyativ kapital"),
+ ("Risk Weighted Assets",r"risk.weighted assets|актив.*взвешенн.*риск"),
+ ("Non-Interest Income",r"non.interest income|непроцентн.*доход"),
+ ("Premiums",r"insurance premiums|gross written premiums|страхов.*преми|sug.urta mukofot"),
+ ("Claims",r"insurance claims|claims incurred|страхов.*выплат|sug.urta to.lov"),
+ ("Underwriting Expenses",r"underwriting expenses|расход.*страхов.*деятель"),
+ ("Investment Income",r"investment income|инвестиционн.*доход|investitsion daromad"),
+ ("Insurance Reserves",r"insurance reserves|страхов.*резерв|sug.urta zaxira"),
+ ("Available Solvency Capital",r"available solvency|фактическ.*марж.*платеж"),
+ ("Required Solvency Capital",r"required solvency|нормативн.*марж.*платеж"),
 )
 def normalize_label(label:str)->str: return " ".join(label.casefold().replace("’","'").split())
 def map_concept(label:str)->str|None:

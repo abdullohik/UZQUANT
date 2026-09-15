@@ -72,3 +72,10 @@ def test_confidence_is_separate_and_bounded():
 def test_severe_governance_override():
     result=apply_risk_gates(D("90"),D("90"),D("90"),"INVESTABLE",severe_governance=True)
     assert result.state=="GOVERNANCE_RISK"
+
+
+def test_existing_acceptance_thresholds_are_unchanged():
+    factors={name:factor(name,"80") for name in ("Valuation","Quality","Liquidity")}
+    score,reason=aggregate_attractiveness(factors)
+    assert score is None and reason=="INSUFFICIENT_FACTOR_COVERAGE"
+    assert apply_risk_gates(D("90"),D("90"),D("49.99"),"INVESTABLE").state=="DATA_INSUFFICIENT"

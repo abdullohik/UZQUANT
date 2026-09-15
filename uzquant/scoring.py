@@ -180,6 +180,24 @@ def _snapshot_id(repo):
 def _unavailable(name,reason,source_ids=()): return FactorScore(name,{},"NOT_TRANSFORMED",None,reason,tuple(source_ids))
 
 
+def _fundamental_factor(repo, issuer_id, name, metric_names, as_of):
+    placeholders=",".join("?" for _ in metric_names)
+    rows=repo.connection.execute(
+        f"SELECT metric_id,metric_name,metric_value FROM fundamental_metrics WHERE issuer_id=? "
+        f"AND period_end<=? AND status='AVAILABLE' AND metric_name IN ({placeholders}) "
+        "ORDER BY period_end DESC,created_at DESC", (issuer_id,as_of.isoformat(),*metric_names)).fetchall()
+    latest={}
+    for row in rows: latest.setdefault(row[1],row)
+    if not latest: return _unavailable(name,"NO_SUPPORTED_FUNDAMENTAL_METRIC")
+    values={k:D(v[2]) for k,v in latest.items()}
+    if name=="Growth": transformed=[max(D("0"),min(D("100"),D("50")+v*D("100"))) for v in values.values()]
+    elif name=="Balance-Sheet Risk": transformed=[max(D("0"),min(D("100"),D("100")-abs(v)*D("50"))) for v in values.values()]
+    else: transformed=[max(D("0"),min(D("100"),v*D("100"))) for v in values.values()]
+    return FactorScore(name,{"metrics":{k:str(v) for k,v in values.items()}},
+        "DOCUMENTED_ABSOLUTE_METRIC_TRANSFORMATION_MEAN",sum(transformed,D("0"))/D(len(transformed)),
+        source_ids=tuple(v[0] for v in latest.values()))
+
+
 def score_real_universe(database: Path, as_of: date=date(2026,9,15)):
     with Repository(database) as repo:
         repo.initialize(); snapshot=_snapshot_id(repo)
@@ -195,12 +213,18 @@ def score_real_universe(database: Path, as_of: date=date(2026,9,15)):
             valuation=repo.connection.execute("SELECT valuation_id,status FROM valuation_records WHERE security_id=? AND data_cutoff_date<=? ORDER BY created_at DESC LIMIT 1",(sid,as_of.isoformat())).fetchone()
             liq=repo.connection.execute("SELECT assessment_id,liquidity_state,liquidity_confidence,hard_flags_json FROM liquidity_assessments WHERE security_id=? AND as_of_date<=? AND participation_rate='0.10' AND position_shares='10000' ORDER BY as_of_date DESC LIMIT 1",(sid,as_of.isoformat())).fetchone()
             ocr=bool(repo.connection.execute("SELECT 1 FROM financial_observations WHERE issuer_id=? AND extraction_method='OCR' LIMIT 1",(issuer_id,)).fetchone())
-            evidence=Evidence(len(docs),0,conflicts,ocr,False,observations,bool(ownership),rights[1] if rights else None,bool(valuation and valuation[1]=="AVAILABLE"),liq[2] if liq else None)
+            verified_shares=bool(repo.connection.execute("SELECT 1 FROM share_capital_observations WHERE security_id=? AND disclosure_date<=? AND effective_date<=? AND verification_status='VERIFIED' AND class_shares_outstanding IS NOT NULL LIMIT 1",(sid,as_of.isoformat(),as_of.isoformat())).fetchone())
+            evidence=Evidence(len(docs),0,conflicts,ocr,verified_shares,observations,bool(ownership),rights[1] if rights else None,bool(valuation and valuation[1]=="AVAILABLE"),liq[2] if liq else None)
             dq=data_quality_score(evidence); lq=liquidity_score(liq[1] if liq else None,liq[2] if liq else None,liq[0] if liq else None)
             factors={name:_unavailable(name,"INSUFFICIENT_VERIFIED_INPUTS") for name in FACTORS}
             factors["Data Quality"]=dq; factors["Liquidity"]=lq
             factors["Valuation"]=_unavailable("Valuation","VALUATION_INSUFFICIENT",(valuation[0],) if valuation else ())
-            factors["Growth"]=_unavailable("Growth","NO_COMPATIBLE_PRIOR_PERIOD",tuple(r[0] for r in docs))
+            sector_row=repo.connection.execute("SELECT coalesce(i.sector,'GENERAL'),coalesce((SELECT source_url FROM financial_documents WHERE issuer_id=i.issuer_id ORDER BY publication_date DESC LIMIT 1),'') FROM issuers i WHERE issuer_id=?",(issuer_id,)).fetchone()
+            routed_sector="BANK" if "/bank/" in sector_row[1] else "INSURANCE" if "/insurance/" in sector_row[1] else sector_row[0]
+            metrics=sector_factor_metrics(routed_sector)
+            factors["Quality"]=_fundamental_factor(repo,issuer_id,"Quality",metrics["Quality"],as_of)
+            factors["Growth"]=_fundamental_factor(repo,issuer_id,"Growth",metrics["Growth"],as_of)
+            factors["Balance-Sheet Risk"]=_fundamental_factor(repo,issuer_id,"Balance-Sheet Risk",metrics["Balance-Sheet Risk"],as_of)
             factors["Momentum"]=_unavailable("Momentum","MARKET_HISTORY_BELOW_60_OBSERVATIONS")
             factors["Dividend"]=_unavailable("Dividend","NO_DATE_COMPATIBLE_DIVIDEND_SCORE")
             catalyst_rows=repo.connection.execute("SELECT e.event_id,e.event_type,e.publication_at,c.event_materiality,c.catalyst_relevance,c.catalyst_confidence,c.catalyst_score FROM research_events e JOIN research_event_securities es USING(event_id) JOIN catalyst_assessments c USING(event_id) WHERE es.security_id=? AND e.publication_at<=? ORDER BY e.publication_at",(sid,as_of.isoformat())).fetchall()
