@@ -15,9 +15,10 @@ from .macro import ingest_macro,export_macro_outputs
 from .position_sizing import run_real_position_examples
 from .execution import run_real_execution_cases
 from .backtesting import run_backtest_readiness
+from .model_validation import run_model_validation
 def main(argv=None):
     parser=argparse.ArgumentParser(prog="uzquant"); sub=parser.add_subparsers(dest="command",required=True)
-    sub.add_parser("init-db"); sub.add_parser("update-security-master"); sub.add_parser("update-market-data"); sub.add_parser("update-financial-documents"); sub.add_parser("calculate-fundamentals"); sub.add_parser("update-corporate-intelligence"); sub.add_parser("update-events"); sub.add_parser("update-macro"); sub.add_parser("export-macro"); sub.add_parser("run-valuations"); sub.add_parser("rank-universe"); sub.add_parser("size-positions"); sub.add_parser("assess-execution"); sub.add_parser("run-backtests"); liquidity=sub.add_parser("assess-liquidity"); liquidity.add_argument("--position-shares",default="10000"); liquidity.add_argument("--participation-rate",default="0.10"); query=sub.add_parser("query-fundamentals"); query.add_argument("--ticker",required=True)
+    sub.add_parser("init-db"); sub.add_parser("update-security-master"); sub.add_parser("update-market-data"); sub.add_parser("update-financial-documents"); sub.add_parser("calculate-fundamentals"); sub.add_parser("update-corporate-intelligence"); sub.add_parser("update-events"); sub.add_parser("update-macro"); sub.add_parser("export-macro"); sub.add_parser("run-valuations"); sub.add_parser("rank-universe"); sub.add_parser("size-positions"); sub.add_parser("assess-execution"); sub.add_parser("run-backtests"); sub.add_parser("validate-model"); liquidity=sub.add_parser("assess-liquidity"); liquidity.add_argument("--position-shares",default="10000"); liquidity.add_argument("--participation-rate",default="0.10"); query=sub.add_parser("query-fundamentals"); query.add_argument("--ticker",required=True)
     args=parser.parse_args(argv); configure_logging(); settings=Settings.from_env()
     if args.command=="init-db":
         settings.database_path.parent.mkdir(parents=True,exist_ok=True)
@@ -37,6 +38,7 @@ def main(argv=None):
         rows=run_real_execution_cases(settings.database_path); result={"status":"SUCCEEDED","cases":len(rows),"estimated":sum(r["result"].status=="ESTIMATE_AVAILABLE" for r in rows),"cannot_estimate":sum(r["result"].status=="CANNOT_ESTIMATE_EXECUTION_RELIABLY" for r in rows),"intraday_unreliable":sum(r["result"].intraday_timing_status=="INTRADAY_TIMING_NOT_RELIABLE" for r in rows)}
     elif args.command=="run-backtests":
         rows=run_backtest_readiness(settings.database_path); result={"status":"SUCCEEDED","strategies":len(rows),"completed":sum(r["status"]=="COMPLETED" for r in rows),"data_insufficient":sum(r["status"]=="DATA_INSUFFICIENT" for r in rows)}
+    elif args.command=="validate-model": result=run_model_validation(settings.database_path)
     elif args.command=="run-valuations":
         cases=run_real_validation(settings.database_path); result={"status":"SUCCEEDED","cases":cases,"available":sum(c["status"]=="AVAILABLE" for c in cases),"insufficient":sum(c["status"]=="VALUATION_INSUFFICIENT" for c in cases)}
     elif args.command=="assess-liquidity":
