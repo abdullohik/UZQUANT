@@ -36,4 +36,4 @@ The raw evidence and penalty list are stored alongside the score. The mapping is
 
 ## Current evidence
 
-All seven real cases have Data Quality 30 and overall Confidence 13.75–14.75. This is driven by short financial and market history, unverified total shares, unknown exact ownership/rights and unavailable valuation—not by low estimated upside. Confidence will improve only after upstream evidence improves.
+All seven real cases have Data Quality 30. After the Phase 9 versioned Catalyst integration, overall Confidence is 14.75–15.75 because event-covered securities have one additional model component; the event does not improve source-data quality. Confidence remains driven by short financial and market history, unverified total shares, unknown exact ownership/rights and unavailable valuation—not by estimated upside.

@@ -13,8 +13,8 @@ from .repository import Repository, utc_now
 from .valuation import MODEL_VERSION as VALUATION_VERSION
 
 D = Decimal
-MODEL_VERSION = "research-ranking/1.0.0"
-SCORING_VERSION = "factor-scoring/1.0.0"
+MODEL_VERSION = "research-ranking/1.1.0"
+SCORING_VERSION = "factor-scoring/1.1.0"
 FACTORS = ("Valuation","Quality","Growth","Momentum","Dividend","Liquidity","Governance",
            "Catalyst","Balance-Sheet Risk","Data Quality")
 SIGNAL_STATES = ("STRONG_BUY","BUY","ACCUMULATE","WATCH","HOLD","REDUCE","AVOID",
@@ -109,6 +109,14 @@ def sector_factor_metrics(sector: str):
     return {"Quality":("ROIC","Gross Margin","Net Margin"),"Growth":("Revenue Growth","EBIT Growth"),"Balance-Sheet Risk":("Net Debt/EBITDA","Interest Coverage")}
 
 
+def catalyst_factor(rows):
+    supported=[r for r in rows if r["catalyst_score"] is not None]
+    raw={"events":[{"event_id":r["event_id"],"event_type":r["event_type"],"publication_at":r["publication_at"],"materiality":r["event_materiality"],"relevance":r["catalyst_relevance"],"confidence":r["catalyst_confidence"],"score":r["catalyst_score"]} for r in rows]}
+    if not supported: return FactorScore("Catalyst",raw,"MAX_SUPPORTED_EVENT_RELEVANCE",None,"NO_DIRECTIONALLY_SUPPORTED_CATALYST")
+    best=max(supported,key=lambda r:D(r["catalyst_score"]))
+    return FactorScore("Catalyst",raw,"MAX_SUPPORTED_EVENT_RELEVANCE",D(best["catalyst_score"]),source_ids=tuple(r["event_id"] for r in supported))
+
+
 def aggregate_attractiveness(factors: dict[str,FactorScore], weights=DEFAULT_WEIGHTS,
                              minimum_available_factors: int = 4):
     available=[f for f in factors.values() if f.score is not None and weights.get(f.name,D("0"))>0]
@@ -162,7 +170,9 @@ def _snapshot_id(repo):
                          ("valuation_records","created_at"),("fundamental_metrics","created_at"),
                          ("accounting_quality_flags","created_at"),("security_rights","disclosure_date"),
                          ("ownership_positions","disclosure_date"),("governance_events","disclosure_date"),
-                         ("dividends","announcement_date"),("corporate_actions","announcement_date")):
+                         ("dividends","announcement_date"),("corporate_actions","announcement_date"),
+                         ("research_events","created_at"),("catalyst_assessments","created_at"),
+                         ("research_event_conflicts","created_at")):
         row=repo.connection.execute(f"SELECT count(*),coalesce(max({column}),'') FROM {table}").fetchone(); pieces.extend(map(str,row))
     return hashlib.sha256("|".join(pieces).encode()).hexdigest()
 
@@ -193,7 +203,8 @@ def score_real_universe(database: Path, as_of: date=date(2026,9,15)):
             factors["Growth"]=_unavailable("Growth","NO_COMPATIBLE_PRIOR_PERIOD",tuple(r[0] for r in docs))
             factors["Momentum"]=_unavailable("Momentum","MARKET_HISTORY_BELOW_60_OBSERVATIONS")
             factors["Dividend"]=_unavailable("Dividend","NO_DATE_COMPATIBLE_DIVIDEND_SCORE")
-            factors["Catalyst"]=_unavailable("Catalyst","PLACEHOLDER_NOT_IMPLEMENTED")
+            catalyst_rows=repo.connection.execute("SELECT e.event_id,e.event_type,e.publication_at,c.event_materiality,c.catalyst_relevance,c.catalyst_confidence,c.catalyst_score FROM research_events e JOIN research_event_securities es USING(event_id) JOIN catalyst_assessments c USING(event_id) WHERE es.security_id=? AND e.publication_at<=? ORDER BY e.publication_at",(sid,as_of.isoformat())).fetchall()
+            factors["Catalyst"]=catalyst_factor(catalyst_rows)
             attractiveness,_=aggregate_attractiveness(factors)
             available_count=sum(f.score is not None for f in factors.values())
             conf=confidence_score(dq.score,D("0") if len(docs)<3 else D("100"),D("25") if evidence.liquidity_confidence=="LOW" else D("75"),D("100") if ownership else D("0"),D("100") if evidence.rights_confidence=="HIGH" else D("0"),D("100") if evidence.valuation_available else D("0"),D(available_count)*D("10"))

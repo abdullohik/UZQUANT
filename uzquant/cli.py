@@ -10,9 +10,10 @@ from .corporate_intelligence import ingest_corporate_intelligence
 from .valuation import run_real_validation
 from .liquidity import run_liquidity_assessments
 from .scoring import score_real_universe
+from .events import ingest_archived_events
 def main(argv=None):
     parser=argparse.ArgumentParser(prog="uzquant"); sub=parser.add_subparsers(dest="command",required=True)
-    sub.add_parser("init-db"); sub.add_parser("update-security-master"); sub.add_parser("update-market-data"); sub.add_parser("update-financial-documents"); sub.add_parser("calculate-fundamentals"); sub.add_parser("update-corporate-intelligence"); sub.add_parser("run-valuations"); sub.add_parser("rank-universe"); liquidity=sub.add_parser("assess-liquidity"); liquidity.add_argument("--position-shares",default="10000"); liquidity.add_argument("--participation-rate",default="0.10"); query=sub.add_parser("query-fundamentals"); query.add_argument("--ticker",required=True)
+    sub.add_parser("init-db"); sub.add_parser("update-security-master"); sub.add_parser("update-market-data"); sub.add_parser("update-financial-documents"); sub.add_parser("calculate-fundamentals"); sub.add_parser("update-corporate-intelligence"); sub.add_parser("update-events"); sub.add_parser("run-valuations"); sub.add_parser("rank-universe"); liquidity=sub.add_parser("assess-liquidity"); liquidity.add_argument("--position-shares",default="10000"); liquidity.add_argument("--participation-rate",default="0.10"); query=sub.add_parser("query-fundamentals"); query.add_argument("--ticker",required=True)
     args=parser.parse_args(argv); configure_logging(); settings=Settings.from_env()
     if args.command=="init-db":
         settings.database_path.parent.mkdir(parents=True,exist_ok=True)
@@ -23,6 +24,7 @@ def main(argv=None):
     elif args.command=="update-financial-documents": result=ingest_financial_documents(settings)
     elif args.command=="calculate-fundamentals": result={"status":"SUCCEEDED",**calculate_all(settings.database_path)}
     elif args.command=="update-corporate-intelligence": result=ingest_corporate_intelligence(settings)
+    elif args.command=="update-events": result={"status":"SUCCEEDED",**ingest_archived_events(settings.database_path)}
     elif args.command=="run-valuations":
         cases=run_real_validation(settings.database_path); result={"status":"SUCCEEDED","cases":cases,"available":sum(c["status"]=="AVAILABLE" for c in cases),"insufficient":sum(c["status"]=="VALUATION_INSUFFICIENT" for c in cases)}
     elif args.command=="assess-liquidity":
