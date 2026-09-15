@@ -8,9 +8,10 @@ from .financial_documents import ingest_financial_documents
 from .fundamental_metrics import calculate_all,query_metrics
 from .corporate_intelligence import ingest_corporate_intelligence
 from .valuation import run_real_validation
+from .liquidity import run_liquidity_assessments
 def main(argv=None):
     parser=argparse.ArgumentParser(prog="uzquant"); sub=parser.add_subparsers(dest="command",required=True)
-    sub.add_parser("init-db"); sub.add_parser("update-security-master"); sub.add_parser("update-market-data"); sub.add_parser("update-financial-documents"); sub.add_parser("calculate-fundamentals"); sub.add_parser("update-corporate-intelligence"); sub.add_parser("run-valuations"); query=sub.add_parser("query-fundamentals"); query.add_argument("--ticker",required=True)
+    sub.add_parser("init-db"); sub.add_parser("update-security-master"); sub.add_parser("update-market-data"); sub.add_parser("update-financial-documents"); sub.add_parser("calculate-fundamentals"); sub.add_parser("update-corporate-intelligence"); sub.add_parser("run-valuations"); liquidity=sub.add_parser("assess-liquidity"); liquidity.add_argument("--position-shares",default="10000"); liquidity.add_argument("--participation-rate",default="0.10"); query=sub.add_parser("query-fundamentals"); query.add_argument("--ticker",required=True)
     args=parser.parse_args(argv); configure_logging(); settings=Settings.from_env()
     if args.command=="init-db":
         settings.database_path.parent.mkdir(parents=True,exist_ok=True)
@@ -23,6 +24,9 @@ def main(argv=None):
     elif args.command=="update-corporate-intelligence": result=ingest_corporate_intelligence(settings)
     elif args.command=="run-valuations":
         cases=run_real_validation(settings.database_path); result={"status":"SUCCEEDED","cases":cases,"available":sum(c["status"]=="AVAILABLE" for c in cases),"insufficient":sum(c["status"]=="VALUATION_INSUFFICIENT" for c in cases)}
+    elif args.command=="assess-liquidity":
+        from decimal import Decimal
+        cases,distribution=run_liquidity_assessments(settings.database_path,position_shares=Decimal(args.position_shares),participation_rate=Decimal(args.participation_rate)); result={"status":"SUCCEEDED","distribution":distribution,"cases":[{"ticker":c["ticker"],"state":c["result"].liquidity_state,"confidence":c["result"].liquidity_confidence,"horizon_days":str(c["result"].liquidation_horizon_days) if c["result"].liquidation_horizon_days is not None else None,"flags":c["result"].hard_flags} for c in cases]}
     else:
         with Repository(settings.database_path) as repo: repo.initialize(); rows=query_metrics(repo,args.ticker)
         result={"status":"SUCCEEDED","ticker":args.ticker,"metrics":[dict(row) for row in rows]}
