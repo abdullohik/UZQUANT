@@ -1,0 +1,9 @@
+sector_code,macro_series_code,transmission_channel,directional_effect,evidence_basis,basis_type,mapping_version
+BANK,CBU_POLICY_RATE,Funding costs and net-interest margin,MIXED,Higher rates can support asset yields but raise funding and credit risk.,ECONOMIC_ASSUMPTION,sector-macro-1.0.0
+BANK,MONEY_SUPPLY_M2,System liquidity and balance-sheet growth,POSITIVE_WHEN_ORDERLY,Money and deposit growth can support banking activity; excessive growth can increase risk.,ECONOMIC_ASSUMPTION,sector-macro-1.0.0
+CONSUMER,CPI,Purchasing power and pricing,MIXED,Inflation can erode real demand while firms differ in pricing power.,ECONOMIC_ASSUMPTION,sector-macro-1.0.0
+EXPORTER,USD_UZS,Foreign-currency revenue translation,GENERALLY_POSITIVE,"UZS depreciation can increase translated export revenue, subject to FX-linked costs.",ECONOMIC_ASSUMPTION,sector-macro-1.0.0
+IMPORTER,USD_UZS,Imported input costs,GENERALLY_NEGATIVE,UZS depreciation raises local-currency import costs unless passed through.,ECONOMIC_ASSUMPTION,sector-macro-1.0.0
+LEVERAGED,CBU_POLICY_RATE,Refinancing and interest costs,GENERALLY_NEGATIVE,Higher rates tend to increase debt-service burden for floating-rate or refinancing needs.,ECONOMIC_ASSUMPTION,sector-macro-1.0.0
+MINING,COPPER_USD,Commodity revenue,GENERALLY_POSITIVE,"Higher realized commodity prices normally support revenue, subject to volumes and costs.",ECONOMIC_ASSUMPTION,sector-macro-1.0.0
+MINING,GOLD_USD,Commodity revenue,GENERALLY_POSITIVE,"Higher realized commodity prices normally support revenue, subject to volumes and costs.",ECONOMIC_ASSUMPTION,sector-macro-1.0.0
