@@ -1,0 +1,12 @@
+ticker,sector_engine,metric_name,metric_value,metric_currency,metric_unit,period_start,period_end,source_url,formula_version
+AGMKP,GENERAL,Gross Margin,0.69971991,,RATIO,2026-01-01,2026-03-31,https://openinfo.uz/en/reports/jsc/quarter/18364,fundamental-metrics/1.0.0
+AGMKP,GENERAL,Net Debt,11981949795.00,,SOURCE_UNIT_UNSPECIFIED,2026-01-01,2026-03-31,https://openinfo.uz/en/reports/jsc/quarter/18364,fundamental-metrics/1.0.0
+AGMKP,GENERAL,Net Margin,0.33660742,,RATIO,2026-01-01,2026-03-31,https://openinfo.uz/en/reports/jsc/quarter/18364,fundamental-metrics/1.0.0
+IPKY,BANK,Assets,29023186458.00,,SOURCE_UNIT_UNSPECIFIED,2026-01-01,2026-03-31,https://openinfo.uz/en/reports/bank/quarter/1257,fundamental-metrics/1.0.0
+IPKY,BANK,Equity,4660152457.00,,SOURCE_UNIT_UNSPECIFIED,2026-01-01,2026-03-31,https://openinfo.uz/en/reports/bank/quarter/1257,fundamental-metrics/1.0.0
+QZSM,GENERAL,Gross Margin,0.25587356,,RATIO,2026-01-01,2026-03-31,https://openinfo.uz/en/reports/jsc/quarter/18437,fundamental-metrics/1.0.0
+QZSM,GENERAL,Net Debt,566695233.00,,SOURCE_UNIT_UNSPECIFIED,2026-01-01,2026-03-31,https://openinfo.uz/en/reports/jsc/quarter/18437,fundamental-metrics/1.0.0
+QZSM,GENERAL,Net Margin,0.24000507,,RATIO,2026-01-01,2026-03-31,https://openinfo.uz/en/reports/jsc/quarter/18437,fundamental-metrics/1.0.0
+UZTL,GENERAL,Gross Margin,0.35986134,,RATIO,2025-01-01,2025-12-31,https://openinfo.uz/en/reports/jsc/annual/6116,fundamental-metrics/1.0.0
+UZTL,GENERAL,Net Debt,5600814570.00,,SOURCE_UNIT_UNSPECIFIED,2025-01-01,2025-12-31,https://openinfo.uz/en/reports/jsc/annual/6116,fundamental-metrics/1.0.0
+UZTL,GENERAL,Net Margin,0.05620826,,RATIO,2025-01-01,2025-12-31,https://openinfo.uz/en/reports/jsc/annual/6116,fundamental-metrics/1.0.0
