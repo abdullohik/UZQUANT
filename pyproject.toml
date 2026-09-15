@@ -9,6 +9,9 @@ description = "Provenance-first data foundation for UZQUANT"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+dev = ["pytest>=9,<10"]
+
 [project.scripts]
 uzquant = "uzquant.cli:main"
 
