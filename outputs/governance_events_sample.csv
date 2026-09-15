@@ -1,0 +1,4 @@
+ticker,event_type,event_date,disclosure_date,confidence,classification_method,source_url,evidence_summary
+UZTL,DILUTION,2026-01-28,2026-04-01,HIGH,DETERMINISTIC_FACT_TYPE_25,https://openinfo.uz/en/facts/25/1706,"Ordinary-share issuance; 545559686 shares; registration P0434-13"
+UZTL,MANAGEMENT_CHANGE,2026-03-13,2026-03-25,HIGH,DETERMINISTIC_FACT_TYPE_8,https://openinfo.uz/ru/facts/8/14659,"Three terminations and four appointments listed in official disclosure"
+QZSM,GOVERNANCE_DECISION,2025-06-20,2025-06-26,HIGH,DETERMINISTIC_VOTE_TABLE,https://openinfo.uz/en/facts/6/12599,"Profit-distribution proposal: 21.6% for; 78.4% against; 0% abstained"
