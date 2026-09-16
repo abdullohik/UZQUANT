@@ -11,7 +11,7 @@ from pathlib import Path
 from .repository import Repository,utc_now
 
 D=Decimal
-MODEL_VERSION="transparent-portfolio/1.0.0"
+MODEL_VERSION="transparent-portfolio/1.1.0"
 
 
 @dataclass(frozen=True)
@@ -170,8 +170,9 @@ def portfolio_metrics(positions:list[Position],correlations:dict[tuple[str,str],
     return {"sector_exposures":sector,"factor_exposures":factor,"liquidity_distribution":liquidity,"days_to_liquidate":{"weighted_average":sum((p.target_weight*p.candidate.exit_horizon_days for p in positions if p.candidate.exit_horizon_days is not None),D("0")) if positions else None},"fx_exposure":weighted("fx_exposure"),"commodity_exposure":weighted("commodity_exposure"),"government_linked_exposure":weighted("government_exposure"),"concentration_hhi":concentration,"historical_risk":{"volatility":variance.sqrt() if risk_available and variance>=0 else None,"status":"AVAILABLE" if risk_available else "UNAVAILABLE"}}
 
 
-def run_sample_portfolios(database:Path,aums=(D("20000000"),D("1000000000"),D("20000000000")),as_of:date=date(2026,9,15)):
+def run_sample_portfolios(database:Path,aums=(D("20000000"),D("1000000000"),D("20000000000")),as_of:date|None=None):
     output=[]
+    as_of=as_of or date.today()
     with Repository(database) as repo:
         repo.initialize(); validation=repo.connection.execute("SELECT * FROM validation_runs ORDER BY created_at DESC LIMIT 1").fetchone(); classification=validation["classification"] if validation else "UNRELIABLE"
         rows=repo.connection.execute("SELECT DISTINCT s.security_id,h.identifier_value ticker,coalesce(i.sector,'UNKNOWN') sector FROM securities s JOIN issuers i USING(issuer_id) JOIN identifier_history h ON h.security_id=s.security_id AND h.identifier_type='TICKER' WHERE EXISTS(SELECT 1 FROM market_observations m WHERE m.security_id=s.security_id) ORDER BY ticker").fetchall();candidates=[]

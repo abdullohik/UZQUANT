@@ -47,3 +47,16 @@ def test_liquidity_deterioration_reduces_allocation():
     good=construct_portfolio([candidate("A",liquidity_capacity_value=D("500000"))],D("1000000"),config=config())
     bad=construct_portfolio([candidate("A",liquidity_capacity_value=D("5000"))],D("1000000"),config=config())
     assert bad.positions[0].target_weight<good.positions[0].target_weight
+
+
+def test_hard_signal_states_are_never_forced_into_portfolio():
+    for state in ("DATA_INSUFFICIENT","LIQUIDITY_TRAP","GOVERNANCE_RISK","HOLD"):
+        result=construct_portfolio([candidate("A",signal_state=state)],D("1000000"),config=config())
+        assert result.status=="DATA_INSUFFICIENT" and not result.positions and result.cash_weight==1
+        assert any("SIGNAL_NOT_ELIGIBLE" in reason for reason in result.reasons)
+
+
+def test_unreliable_validation_blocks_otherwise_eligible_candidate():
+    result=construct_portfolio([candidate("A",validation_classification="UNRELIABLE")],D("1000000"),config=config())
+    assert result.status=="DATA_INSUFFICIENT" and result.cash_weight==1
+    assert any("MODEL_NOT_VALIDATED" in reason for reason in result.reasons)
