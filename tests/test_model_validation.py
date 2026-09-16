@@ -3,7 +3,8 @@ from decimal import Decimal as D
 
 import pytest
 
-from uzquant.model_validation import EXPERIMENTS,Experiment,bootstrap_mean_interval,chronological_split,classify_validation,factor_monotonicity,remove_best_contributor,rolling_splits,validate_experiment
+from uzquant.model_validation import EXPERIMENTS,Experiment,bootstrap_mean_interval,chronological_split,classify_validation,factor_monotonicity,remove_best_contributor,rolling_splits,run_model_validation,validate_experiment
+from uzquant.repository import Repository
 
 
 def days(n):return [date(2020,1,1).fromordinal(date(2020,1,1).toordinal()+i) for i in range(n)]
@@ -51,3 +52,18 @@ def test_robust_label_requires_multiple_oos_and_stress_stability():
     assert classify_validation(D(".2"),1,9,10,D(".8"),D(".2"),D(".7"))=="PROMISING_BUT_UNPROVEN"
     assert classify_validation(None,0,0,10,None,None,None)=="UNRELIABLE"
     assert classify_validation(D(".2"),3,9,10,D(".8"),D(".5"),D(".7"))=="FRAGILE"
+
+
+def test_insufficient_phase13_is_versioned_and_append_only(tmp_path):
+    database=tmp_path/"validation.sqlite3"
+    first=run_model_validation(database); second=run_model_validation(database)
+    assert first["phase13_classification"]=="BACKTEST_INSUFFICIENT"
+    assert first["evidence_outcome"]=="C_INSUFFICIENT_HISTORY"
+    assert first["walk_forward_windows"]==first["oos_observations"]==0
+    with Repository(database) as repo:
+        runs=repo.connection.execute("SELECT validation_run_id,phase13_classification,evidence_outcome FROM validation_runs ORDER BY created_at").fetchall()
+        experiments=repo.connection.execute("SELECT strategy_version,data_snapshot_id,training_start,oos_end,status FROM experiment_registry").fetchall()
+    assert len(runs)==2 and runs[0][0]!=runs[1][0]
+    assert all(row[1:]==("BACKTEST_INSUFFICIENT","C_INSUFFICIENT_HISTORY") for row in runs)
+    assert len(experiments)==2*len(EXPERIMENTS)
+    assert all(row[0]=="pit-liquidity-backtest/1.0.0" and row[1] is None and row[2] is None and row[3] is None and row[4]=="DATA_INSUFFICIENT" for row in experiments)

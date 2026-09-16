@@ -10,11 +10,11 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from .backtesting import readiness
+from .backtesting import MODEL_VERSION as BACKTEST_VERSION, readiness
 from .repository import Repository, utc_now
 
 D=Decimal
-VERSION="walk-forward-validation/1.0.0"
+VERSION="walk-forward-validation/1.1.0"
 CLASSIFICATIONS=("ROBUST","PROMISING_BUT_UNPROVEN","FRAGILE","UNRELIABLE")
 
 
@@ -122,13 +122,21 @@ def run_model_validation(database:Path):
         repo.initialize(); backtest_reasons=readiness(repo); completed=repo.connection.execute("SELECT count(*) FROM backtest_runs WHERE status='COMPLETED'").fetchone()[0]
         reasons=list(backtest_reasons)
         if completed==0:reasons.append("NO_COMPLETED_POINT_IN_TIME_BACKTEST")
+        phase13_classification="BACKTEST_INSUFFICIENT" if completed==0 else "BACKTEST_VALID"
+        evidence_outcome="C_INSUFFICIENT_HISTORY" if completed==0 else "VALIDATION_ELIGIBLE"
         classification=classify_validation(None,0,0,len(EXPERIMENTS)-1,None,None,None); run_id=str(uuid.uuid4()); now=utc_now()
-        repo.connection.execute("INSERT INTO validation_runs VALUES(?,?,?,?,?,?,?)",(run_id,"Overall Ranking + Liquidity Gates",classification,"DATA_INSUFFICIENT",json.dumps(reasons),VERSION,now))
+        repo.connection.execute(
+            "INSERT INTO validation_runs(validation_run_id,strategy_name,classification,status,reasons_json,validation_version,created_at,phase13_classification,evidence_outcome) VALUES(?,?,?,?,?,?,?,?,?)",
+            (run_id,"Overall Ranking + Liquidity Gates",classification,"DATA_INSUFFICIENT",json.dumps(reasons),VERSION,now,phase13_classification,evidence_outcome),
+        )
         experiment_ids={}
         for experiment in EXPERIMENTS:
             validate_experiment(experiment); eid=str(uuid.uuid4()); experiment_ids[experiment.name]=eid
-            repo.connection.execute("INSERT INTO experiment_registry VALUES(?,?,?,?,?,?,?,?,?,?,?)",(eid,run_id,experiment.name,experiment.family,experiment_ids.get("BASELINE") if experiment.name!="BASELINE" else None,json.dumps(experiment.parameters,sort_keys=True),experiment.hypothesis,now,0,"DATA_INSUFFICIENT",json.dumps({"reason":"NO_COMPLETED_POINT_IN_TIME_BACKTEST"})))
+            repo.connection.execute(
+                "INSERT INTO experiment_registry(experiment_id,validation_run_id,experiment_name,experiment_family,parent_experiment_id,parameters_json,hypothesis,registered_at,uses_final_oos_for_tuning,status,result_json,strategy_version,data_snapshot_id,period_start,period_end,training_start,training_end,validation_start,validation_end,oos_start,oos_end) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (eid,run_id,experiment.name,experiment.family,experiment_ids.get("BASELINE") if experiment.name!="BASELINE" else None,json.dumps(experiment.parameters,sort_keys=True),experiment.hypothesis,now,0,"DATA_INSUFFICIENT",json.dumps({"reason":"NO_COMPLETED_POINT_IN_TIME_BACKTEST","phase13_classification":phase13_classification}),BACKTEST_VERSION,None,None,None,None,None,None,None,None,None),
+            )
             repo.connection.execute("INSERT INTO robustness_results VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(str(uuid.uuid4()),eid,None,"PRODUCTION",None,None,None,None,None,None,None,"UNAVAILABLE","NO_COMPLETED_POINT_IN_TIME_BACKTEST",now))
         risks=(("DATA_COVERAGE","CRITICAL",{"reasons":reasons}),("SINGLE_SECURITY_DEPENDENCE","HIGH",{"status":"UNTESTABLE"}),("SINGLE_PERIOD_DEPENDENCE","HIGH",{"status":"UNTESTABLE"}),("SECTOR_DEPENDENCE","HIGH",{"status":"UNTESTABLE"}),("ILLIQUID_EVENT_DEPENDENCE","HIGH",{"status":"UNTESTABLE"}),("PARAMETER_DEPENDENCE","HIGH",{"status":"UNTESTABLE"}),("VALUATION_ASSUMPTION_DEPENDENCE","HIGH",{"status":"UNTESTABLE"}))
         for kind,severity,evidence in risks:repo.connection.execute("INSERT INTO model_risk_findings VALUES(?,?,?,?,?,?)",(str(uuid.uuid4()),run_id,kind,severity,json.dumps(evidence,sort_keys=True),now))
-        repo.connection.commit(); return {"validation_run_id":run_id,"status":"DATA_INSUFFICIENT","classification":classification,"experiments_registered":len(EXPERIMENTS),"reasons":reasons,"model_risks":len(risks)}
+        repo.connection.commit(); return {"validation_run_id":run_id,"status":"DATA_INSUFFICIENT","classification":classification,"phase13_classification":phase13_classification,"evidence_outcome":evidence_outcome,"experiments_registered":len(EXPERIMENTS),"experiments_completed":0,"walk_forward_windows":0,"oos_observations":0,"reasons":reasons,"model_risks":len(risks)}
