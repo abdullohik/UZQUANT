@@ -1,7 +1,7 @@
 from datetime import date,datetime,timezone
 from decimal import Decimal as D
 
-from uzquant.backtesting import CostModel,TradeBar,apply_verified_split,delisting_outcome,financial_documents_as_of,macro_vintages_as_of,simulate_order,universe_as_of,verified_cash_dividend
+from uzquant.backtesting import CostModel,TradeBar,apply_verified_split,delisting_outcome,financial_documents_as_of,macro_vintages_as_of,records_known_as_of,simulate_order,universe_as_of,verified_cash_dividend
 
 
 def test_future_filing_and_restatement_leakage():
@@ -52,3 +52,21 @@ def test_delisting_is_not_silently_dropped():
     unresolved=delisting_outcome(D("100"),None); settled=delisting_outcome(D("100"),D("4"))
     assert unresolved["status"]=="UNRESOLVED_DELISTING" and unresolved["shares"]==D("100")
     assert settled=={"status":"CASH_SETTLED","cash":D("400"),"shares":D("0")}
+
+
+def test_ticker_history_is_selected_only_when_known():
+    rows=[
+        {"ticker":"OLD","known_at":"2024-01-01T00:00:00+00:00"},
+        {"ticker":"NEW","known_at":"2024-06-01T00:00:00+00:00"},
+    ]
+    selected=records_known_as_of(rows,datetime(2024,3,1,tzinfo=timezone.utc),"known_at")
+    assert [row["ticker"] for row in selected]==["OLD"]
+
+
+def test_historical_signal_records_are_not_rewritten_by_future_generation():
+    rows=[
+        {"signal_id":"original","generated_at":"2024-01-01T00:00:00+00:00"},
+        {"signal_id":"future","generated_at":"2024-02-01T00:00:00+00:00"},
+    ]
+    selected=records_known_as_of(rows,datetime(2024,1,15,tzinfo=timezone.utc),"generated_at")
+    assert [row["signal_id"] for row in selected]==["original"]

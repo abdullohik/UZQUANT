@@ -185,14 +185,30 @@ def build_database_snapshot(repo: Repository, decision_timestamp: datetime):
 
 def readiness(repo: Repository):
     dates=[r[0] for r in repo.connection.execute("SELECT DISTINCT trade_date FROM market_observations WHERE series_type='RAW_OBSERVED' ORDER BY trade_date")]
-    signal_dates=[r[0] for r in repo.connection.execute("SELECT DISTINCT substr(generated_at,1,10) FROM research_signals ORDER BY generated_at")]
-    known_dates=[r[0][:10] for r in repo.connection.execute("SELECT DISTINCT known_at FROM listings")]
+    # A rerun date is not a historical decision date.  Use the analytical
+    # snapshot's as-of date, rather than generated_at, to measure signal history.
+    signal_dates=[r[0] for r in repo.connection.execute(
+        "SELECT DISTINCT f.as_of_date FROM research_signals s "
+        "JOIN factor_scores f ON f.data_snapshot_id=s.data_snapshot_id "
+        "ORDER BY f.as_of_date"
+    )]
+    # Repeated current security-master ingestions are not historical membership.
+    # Membership is reconstructable only when listing validity dates exist.
+    membership_dates=[r[0] for r in repo.connection.execute(
+        "SELECT DISTINCT listing_date FROM listings WHERE listing_date IS NOT NULL "
+        "UNION SELECT DISTINCT delisting_date FROM listings WHERE delisting_date IS NOT NULL"
+    )]
     reasons=[]
-    if len(dates)<60: reasons.append("FEWER_THAN_60_MARKET_DATES")
-    if len(signal_dates)<2: reasons.append("NO_HISTORICAL_SIGNAL_SEQUENCE")
-    if len(known_dates)<2: reasons.append("NO_HISTORICAL_UNIVERSE_SNAPSHOTS")
-    if not repo.connection.execute("SELECT 1 FROM market_observations WHERE series_type='TOTAL_RETURN' LIMIT 1").fetchone(): reasons.append("NO_VERIFIED_TOTAL_RETURN_SERIES")
-    reasons.append("NO_VERIFIED_HISTORICAL_BENCHMARK_SERIES")
+    if len(dates)<60: reasons.append("INSUFFICIENT_MARKET_HISTORY")
+    if len(signal_dates)<2:
+        reasons.extend(("INSUFFICIENT_POINT_IN_TIME_FINANCIALS","INSUFFICIENT_HISTORICAL_SIGNALS"))
+    if len(membership_dates)<2: reasons.append("HISTORICAL_UNIVERSE_INSUFFICIENT")
+    if not repo.connection.execute("SELECT 1 FROM market_observations WHERE series_type='TOTAL_RETURN' LIMIT 1").fetchone(): reasons.append("TOTAL_RETURN_HISTORY_INSUFFICIENT")
+    if not repo.connection.execute(
+        "SELECT 1 FROM market_observations WHERE bid IS NOT NULL AND ask IS NOT NULL "
+        "AND share_volume IS NOT NULL LIMIT 1"
+    ).fetchone(): reasons.append("EXECUTION_HISTORY_INSUFFICIENT")
+    reasons.append("BENCHMARK_UNAVAILABLE")
     return reasons
 
 
