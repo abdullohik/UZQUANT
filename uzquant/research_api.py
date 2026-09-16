@@ -131,6 +131,9 @@ class ResearchService:
             if liquidity and liquidity["liquidity_state"] in {"LIQUIDITY_TRAP","UNASSESSABLE"}: warnings.append(liquidity["liquidity_state"])
             if signal and float(signal["confidence"])<50: warnings.append("LOW_CONFIDENCE")
             if identity["security_class_code"]=="PREFERRED" and (not rights_assessment or rights_assessment["classification"]!="RIGHTS_VERIFIED"): warnings.append("RIGHTS_UNVERIFIED")
+            stale=[r[0] for r in c.execute("SELECT pipeline FROM pipeline_health WHERE status IN('STALE','FAILED')")]
+            if "market_data" in stale: warnings.append("STALE_DATA")
+            if "financial_documents" in stale or "financial_normalization" in stale: warnings.append("STALE_FINANCIALS")
             detail={"api_version":API_VERSION,"as_of":signal["generated_at"] if signal else (market[0]["trade_date"] if market else None),"status":"OK","identity":identity,"market_observations":market,"market_quality":quality,"market_flags":flags,"financial_documents":documents,"normalized_financials":financials,"fundamentals":metrics,"valuation":valuations,"valuation_methods":attempts,"valuation_assumptions":assumptions,"valuation_status":valuation_status,"liquidity":liquidity,"capacity":capacity,"ownership":ownership,"ownership_metrics":ownership_metrics,"rights":rights,"rights_assessment":rights_assessment,"governance":governance,"corporate_actions":actions,"dividends":dividends,"events":events,"factors":factors,"data_quality":next((f for f in factors if f["factor_name"]=="Data Quality"),None),"signal":signal,"signal_history":history,"warnings":warnings,"sources":sources,"source_record_ids":[s["document_id"] for s in sources]}
             detail["report"]=grounded_report(detail)
             return detail
@@ -167,6 +170,11 @@ class ResearchService:
     def pipelines(self):
         with Repository(self.database) as repo:
             repo.initialize(); c=repo.connection
+            from .operations import register_pipelines
+            register_pipelines(repo)
+            health=_rows(c,"SELECT * FROM pipeline_health ORDER BY pipeline")
+            if any(row.get("last_attempt_at") for row in health):
+                return {"api_version":API_VERSION,"status":"OK","pipelines":health,"recent_runs":_rows(c,"SELECT * FROM scheduled_pipeline_runs ORDER BY started_at DESC LIMIT 100"),"open_alerts":_rows(c,"SELECT * FROM research_alerts WHERE status='OPEN' ORDER BY created_at DESC LIMIT 100")}
             def latest_run(source): return _row(c,"SELECT r.*,s.name source_name FROM ingestion_runs r JOIN data_sources s USING(source_id) WHERE r.source_id=? ORDER BY r.started_at DESC LIMIT 1",(source,))
             def analytical(name,table,time_col,source,status="SUCCEEDED"):
                 stamp=c.execute(f"SELECT max({time_col}) FROM {table}").fetchone()[0]
@@ -180,3 +188,8 @@ class ResearchService:
             stages=[run_stage("security master",security,"RSE Toshkent"),run_stage("market data",market,"RSE Toshkent"),run_stage("financials",financial,"Openinfo")]
             stages.extend((analytical("corporate intelligence","governance_events","disclosure_date","Openinfo/RSE"),analytical("valuation","valuation_records","created_at","UZQUANT deterministic engine","DEGRADED"),analytical("liquidity","liquidity_assessments","created_at","RSE market observations"),analytical("events","research_events","created_at","Openinfo"),analytical("macro","macro_observations","retrieved_at","CBU/verified macro sources"),analytical("signals","research_signals","generated_at","UZQUANT deterministic engine")))
             return {"api_version":API_VERSION,"status":"OK","pipelines":stages}
+
+    def operations(self):
+        with Repository(self.database) as repo:
+            repo.initialize(); c=repo.connection
+            return {"api_version":API_VERSION,"status":"OK","health":_rows(c,"SELECT * FROM pipeline_health ORDER BY pipeline"),"runs":_rows(c,"SELECT * FROM scheduled_pipeline_runs ORDER BY started_at DESC LIMIT 200"),"anomalies":_rows(c,"SELECT * FROM research_anomalies ORDER BY created_at DESC LIMIT 200"),"alerts":_rows(c,"SELECT * FROM research_alerts ORDER BY created_at DESC LIMIT 200"),"signal_transitions":_rows(c,"SELECT * FROM signal_state_transitions ORDER BY changed_at DESC LIMIT 200")}

@@ -14,6 +14,7 @@ class FakeService:
     def backtests(self): return {"status":"BACKTEST_INSUFFICIENT"}
     def validation(self): return {"validation":{"classification":"UNRELIABLE"}}
     def pipelines(self): return {"pipelines":[]}
+    def operations(self): return {"status":"OK","health":[],"runs":[],"anomalies":[],"alerts":[],"signal_transitions":[]}
 
 
 def request(app,path):
@@ -58,3 +59,9 @@ def test_api_schema_and_static_assets():
     assert request(app,"/api/v1/health")[1]["status"]=="OK"
     status,html=request(app,"/")
     assert status["status"].startswith("200") and "UZQUANT" in html
+
+
+def test_phase17_operations_endpoint_is_read_only_and_available():
+    status,payload=request(ResearchApplication(FakeService()),"/api/v1/operations")
+    assert status["status"].startswith("200")
+    assert payload["status"]=="OK" and payload["alerts"]==[]

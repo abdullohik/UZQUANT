@@ -26,6 +26,7 @@ class ResearchApplication:
             if path=="/api/v1/backtests": return self._json(start_response,200,self.service.backtests())
             if path=="/api/v1/validation": return self._json(start_response,200,self.service.validation())
             if path=="/api/v1/pipelines": return self._json(start_response,200,self.service.pipelines())
+            if path=="/api/v1/operations": return self._json(start_response,200,self.service.operations())
             parts=[p for p in path.split("/") if p]
             if len(parts)>=4 and parts[:3]==["api","v1","securities"]:
                 detail=self.service.security(parts[3]); section=parts[4] if len(parts)>4 else None
