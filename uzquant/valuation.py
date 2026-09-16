@@ -272,21 +272,21 @@ def _real_reasons(repo: Repository, security_id: str, sector: str, as_of: date) 
         if any(not r[1] for r in docs): reasons.append("UNVERIFIED_FINANCIAL_CURRENCY")
         if any(not r[2] or r[2] == "UNKNOWN" for r in docs): reasons.append("UNVERIFIED_REPORTING_PERIMETER")
         if len(docs) < 2: reasons.append("INSUFFICIENT_FINANCIAL_HISTORY")
-        unit_unknown = repo.connection.execute("SELECT 1 FROM financial_observations WHERE document_id IN (%s) AND unit='SOURCE_UNIT_UNSPECIFIED' LIMIT 1" % ",".join("?" * len(docs)), document_ids).fetchone()
+        unit_unknown = repo.connection.execute("SELECT 1 FROM financial_observation_versions WHERE document_id IN (%s) AND superseded_by_version_id IS NULL AND unit='SOURCE_UNIT_UNSPECIFIED' LIMIT 1" % ",".join("?" * len(docs)), document_ids).fetchone()
         if unit_unknown: reasons.append("UNVERIFIED_FINANCIAL_UNIT")
     share = repo.connection.execute("SELECT observation_id,class_shares_outstanding,currency FROM share_capital_observations WHERE security_id=? AND disclosure_date<=? AND effective_date<=? AND verification_status='VERIFIED' AND class_shares_outstanding IS NOT NULL ORDER BY effective_date DESC,disclosure_date DESC LIMIT 1",(security_id,as_of.isoformat(),as_of.isoformat())).fetchone()
     if not share: reasons.append("MISSING_VERIFIED_CLASS_SHARES_OUTSTANDING")
     if sector in {"GENERAL", "MINING"}:
-        concepts = {r[0] for r in repo.connection.execute("SELECT DISTINCT canonical_concept FROM financial_observations WHERE issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?)", (security_id,))}
+        concepts = {r[0] for r in repo.connection.execute("SELECT DISTINCT canonical_concept FROM financial_observation_versions WHERE superseded_by_version_id IS NULL AND issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?)", (security_id,))}
         for concept in ("Operating Cash Flow", "CapEx", "D&A"):
             if concept not in concepts: reasons.append("MISSING_" + concept.upper().replace(" ", "_&" if concept == "D&A" else "_"))
     rights = repo.connection.execute("SELECT rights_confidence,voting_rights,dividend_rights FROM security_rights WHERE security_id=? ORDER BY disclosure_date DESC LIMIT 1", (security_id,)).fetchone()
     klass = repo.connection.execute("SELECT security_class_code FROM securities WHERE security_id=?", (security_id,)).fetchone()
     if klass and klass[0] == "PREFERRED" and (not rights or rights[0] != "HIGH" or not rights[2]):
         reasons.append("PREFERRED_SECURITY_RIGHTS_UNVERIFIED")
-    observations = [r[0] for r in repo.connection.execute("SELECT observation_id FROM financial_observations WHERE document_id IN (%s)" % (",".join("?" * len(docs)) if docs else "NULL"), document_ids)] if docs else []
+    observations = [r[0] for r in repo.connection.execute("SELECT version_id FROM financial_observation_versions WHERE superseded_by_version_id IS NULL AND document_id IN (%s)" % (",".join("?" * len(docs)) if docs else "NULL"), document_ids)] if docs else []
     latest = {}
-    for concept,value,currency,unit,oid,document_id in repo.connection.execute("SELECT o.canonical_concept,o.normalized_value,o.currency,o.unit,o.observation_id,o.document_id FROM financial_observations o JOIN financial_documents d USING(document_id) JOIN financial_document_entity_checks c USING(document_id) JOIN financial_document_identity_assignments a USING(document_id) WHERE o.issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?) AND d.publication_date<=? AND c.validation_status='MATCHED' AND a.assignment_status='VERIFIED' ORDER BY o.period_end DESC,d.publication_date DESC",(security_id,as_of.isoformat())):
+    for concept,value,currency,unit,oid,document_id in repo.connection.execute("SELECT o.canonical_concept,o.normalized_value,o.currency,o.unit,o.version_id,o.document_id FROM financial_observation_versions o JOIN financial_documents d USING(document_id) JOIN financial_document_entity_checks c USING(document_id) JOIN financial_document_identity_assignments a USING(document_id) WHERE o.superseded_by_version_id IS NULL AND o.issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?) AND d.publication_date<=? AND c.validation_status='MATCHED' AND a.assignment_status='VERIFIED' ORDER BY o.period_end DESC,d.publication_date DESC",(security_id,as_of.isoformat())):
         latest.setdefault(concept,{"value":value,"currency":currency,"unit":unit,"observation_id":oid,"document_id":document_id})
     assembled={"latest_concepts":latest,"share_capital_observation_id":share[0] if share else None,"class_shares_outstanding":share[1] if share else None}
     if docs and not latest:

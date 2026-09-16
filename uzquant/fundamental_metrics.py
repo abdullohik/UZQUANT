@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json
+import json,uuid
 from dataclasses import dataclass
 from datetime import date,timedelta
 from decimal import Decimal
@@ -120,7 +120,7 @@ def _flag(result:Result,threshold:Decimal,direction:str):
     triggered=result.value>threshold if direction=="gt" else result.value<threshold
     return ("TRIGGERED" if triggered else "NOT_TRIGGERED",{"value":str(result.value),"threshold":str(threshold),"test":direction})
 def _inputs(repo,document_id):
-    rows=repo.connection.execute("SELECT canonical_concept,normalized_value,observation_id FROM financial_observations WHERE document_id=? ORDER BY observation_id",(document_id,)).fetchall(); grouped={}
+    rows=repo.connection.execute("SELECT canonical_concept,normalized_value,version_id FROM financial_observation_versions WHERE document_id=? AND superseded_by_version_id IS NULL ORDER BY version_id",(document_id,)).fetchall(); grouped={}
     for r in rows: grouped.setdefault(r[0],[]).append(r)
     values={k:(Decimal(items[0][1]) if len(items)==1 else None) for k,items in grouped.items()}
     ids={k:tuple(i[2] for i in items) for k,items in grouped.items() if len(items)==1}
@@ -140,6 +140,8 @@ def calculate_document(repo:Repository,document_id:str):
         mid=stable_id("metric",f"{document_id}:{name}:CURRENT:{FORMULA_VERSION}")
         ratio=name not in {"Net Debt","Free Cash Flow","Assets","Loans","Deposits","Equity","Net Interest Income","Claims","Investment Income","Reserves","Production","Unit Costs"}
         repo.connection.execute("INSERT INTO fundamental_metrics VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(document_id,metric_name,comparison_horizon,formula_version) DO UPDATE SET metric_value=excluded.metric_value,metric_currency=excluded.metric_currency,metric_unit=excluded.metric_unit,status=excluded.status,unavailable_reason=excluded.unavailable_reason,source_observation_ids_json=excluded.source_observation_ids_json,created_at=excluded.created_at",(mid,doc["issuer_id"],document_id,name,engine,doc["period_start"],doc["period_end"],"CURRENT",str(result.value) if result.value is not None else None,None if ratio else doc["currency"],"RATIO" if ratio else "SOURCE_UNIT_UNSPECIFIED",result.status,result.reason,FORMULA_VERSION,json.dumps(obs),json.dumps([document_id]),utc_now()))
+        for version_id in obs:
+            repo.connection.execute("INSERT OR IGNORE INTO analytical_observation_lineage VALUES(?,?,?,?,?)",(str(uuid.uuid4()),"fundamental_metrics",mid,version_id,utc_now()))
     for name,(status,evidence) in flags.items():
         fid=stable_id("quality-flag",f"{document_id}:{name}:{FORMULA_VERSION}")
         repo.connection.execute("INSERT INTO accounting_quality_flags VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(document_id,flag_name,formula_version) DO UPDATE SET status=excluded.status,evidence_json=excluded.evidence_json,created_at=excluded.created_at",(fid,doc["issuer_id"],document_id,name,status,json.dumps(evidence,sort_keys=True),FORMULA_VERSION,utc_now()))

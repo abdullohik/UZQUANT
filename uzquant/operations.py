@@ -68,15 +68,32 @@ def numeric_jump(previous,current,multiple=Decimal("10")):
     return abs(current/previous)>=multiple or abs(previous/current)>=multiple if current!=0 else True
 
 
+class SourceSchemaChanged(ValueError): pass
+
+
 def detect_source_schema(expected:set[str],observed:set[str]):
     missing=sorted(expected-observed); unexpected=sorted(observed-expected)
-    return {"status":"FAILED" if missing else "HEALTHY","missing":missing,"unexpected":unexpected}
+    classification="BREAKING_SCHEMA_CHANGE" if missing else "COMPATIBLE_SCHEMA_CHANGE" if unexpected else "COSMETIC_CHANGE"
+    return {"status":"FAILED" if missing else "HEALTHY","classification":classification,"missing":missing,"unexpected":unexpected}
 
 
 def record_source_schema_check(repo:Repository,pipeline:str,expected:set[str],observed:set[str]):
     result=detect_source_schema(expected,observed)
     if result["status"]=="FAILED":
         record_alert(repo,"SOURCE_SCHEMA_CHANGE","CRITICAL","PIPELINE",pipeline,"Material source schema change",f"Missing expected fields: {', '.join(result['missing'])}",result,dedupe_key=f"schema:{pipeline}:{','.join(result['missing'])}")
+    return result
+
+
+def enforce_source_schema(repo:Repository,pipeline:str,source_id:str,parser_version:str,raw_document_id:str|None,expected:set[str],observed:set[str]):
+    result=detect_source_schema(expected,observed); now=utc_now()
+    contract_id=f"{pipeline}:{source_id}:{parser_version}"
+    repo.connection.execute("INSERT OR IGNORE INTO source_schema_contracts VALUES(?,?,?,?,?,?)",(contract_id,pipeline,source_id,parser_version,json.dumps({"required":sorted(expected)},sort_keys=True),now))
+    repo.connection.execute("INSERT INTO source_schema_checks VALUES(?,?,?,?,?,?,?)",(str(uuid.uuid4()),contract_id,raw_document_id,result["classification"],json.dumps(sorted(observed)),json.dumps(result,sort_keys=True),now))
+    if result["classification"]=="BREAKING_SCHEMA_CHANGE":
+        record_anomaly(repo,"SOURCE_SCHEMA_CHANGED","CRITICAL","PIPELINE",pipeline,result,(raw_document_id,) if raw_document_id else (),f"schema:{pipeline}:{raw_document_id}:{','.join(result['missing'])}")
+        record_alert(repo,"SOURCE_SCHEMA_CHANGE","CRITICAL","PIPELINE",pipeline,"Breaking source schema change",f"Missing required fields: {', '.join(result['missing'])}",result,(raw_document_id,) if raw_document_id else (),f"schema-alert:{pipeline}:{raw_document_id}:{','.join(result['missing'])}")
+        repo.connection.execute("UPDATE pipeline_health SET status='FAILED',latest_error='SOURCE_SCHEMA_CHANGED',retry_state='SCHEMA_BLOCKED',updated_at=? WHERE pipeline=?",(now,pipeline))
+        raise SourceSchemaChanged(f"SOURCE_SCHEMA_CHANGED:{pipeline}:{','.join(result['missing'])}")
     return result
 
 
@@ -127,7 +144,9 @@ class Scheduler:
                 if force or not health or not health[0] or _dt(health[0])<=now: groups.setdefault(p.handler_group,[]).append(p)
             for group,pipelines in groups.items():
                 same_group={x.name for x in pipelines}
-                blocked=[d for p in pipelines for d in p.dependencies if d not in same_group and (repo.connection.execute("SELECT status FROM pipeline_health WHERE pipeline=?",(d,)).fetchone() or ["FAILED"])[0] in {"FAILED","STALE"}]
+                dependency_states={d:(repo.connection.execute("SELECT status FROM pipeline_health WHERE pipeline=?",(d,)).fetchone() or ["FAILED"])[0] for p in pipelines for d in p.dependencies if d not in same_group}
+                blocked=[d for d,status in dependency_states.items() if status in {"FAILED","STALE"}]
+                degraded=[d for d,status in dependency_states.items() if status=="DEGRADED"]
                 if blocked: outcome={"status":"STALE","attempted":0,"succeeded":0,"failed":0,"error":"UPSTREAM_STALE:"+','.join(sorted(set(blocked))),"retry_state":"BLOCKED"}
                 else:
                     runner=self.runners.get(group); outcome=None
@@ -138,9 +157,11 @@ class Scheduler:
                         except Exception as exc:
                             outcome={"status":"FAILED","attempted":0,"succeeded":0,"failed":1,"error":f"{type(exc).__name__}: {exc}","retry_state":f"ATTEMPT_{attempt}_FAILED"}
                             if attempt<self.max_attempts:self.sleeper(min(2**(attempt-1),8))
+                    if degraded and outcome and outcome["status"]=="HEALTHY":
+                        outcome["status"]="DEGRADED"; outcome["error"]="UPSTREAM_DEGRADED:"+','.join(sorted(degraded))
                 for p in pipelines:
                     started=now.isoformat();finished=utc_now();expected=(now+timedelta(seconds=p.interval_seconds)).isoformat();run_id=str(uuid.uuid4())
-                    repo.connection.execute("INSERT INTO scheduled_pipeline_runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(run_id,p.name,started,finished,outcome["status"],p.source,outcome["attempted"],outcome["succeeded"],outcome["failed"],outcome["error"],outcome["retry_state"],VERSION,expected,json.dumps({"blocked":blocked})))
+                    repo.connection.execute("INSERT INTO scheduled_pipeline_runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(run_id,p.name,started,finished,outcome["status"],p.source,outcome["attempted"],outcome["succeeded"],outcome["failed"],outcome["error"],outcome["retry_state"],VERSION,expected,json.dumps({"blocked":blocked,"degraded":degraded})))
                     last_success=finished if outcome["status"] in {"HEALTHY","DEGRADED"} else None
                     downstream=[x.name for x in PIPELINES if p.name in x.dependencies]
                     repo.connection.execute("UPDATE pipeline_health SET status=?,last_attempt_at=?,last_success_at=coalesce(?,last_success_at),expected_refresh_at=?,stale_since=?,latest_error=?,retry_state=?,source=?,data_version=?,affected_downstream_json=?,updated_at=? WHERE pipeline=?",(outcome["status"],finished,last_success,expected,started if outcome["status"]=="STALE" else None,outcome["error"],outcome["retry_state"],p.source,VERSION,json.dumps(downstream),finished,p.name))

@@ -3,6 +3,7 @@ from decimal import Decimal
 from pathlib import Path
 from uzquant.financial_documents import parse_decimal,parse_statement_rows,point_in_time
 from uzquant.financial_taxonomy import map_concept
+from uzquant.financial_lineage import append_version
 from uzquant.repository import Repository,stable_id
 
 FIXTURE=b'''<table><tr><th>Indicator Name</th><th>Row Code</th><th>At the Beginning of the Reporting Period</th><th>At the End of the Reporting Period</th></tr><tr><td>Total Assets</td><td>400</td><td>900,00</td><td>1 000,00</td></tr><tr><td>Missing</td><td>401</td><td>-</td><td>-</td></tr></table>'''
@@ -28,6 +29,7 @@ class FinancialTests(unittest.TestCase):
     repo.connection.execute("INSERT INTO financial_documents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(doc,'i',raw,'Issuer','UNKNOWN','2023-01-01','2023-12-31',pub,None,'ANNUAL','HTML','LOCAL_GAAP','UNAUDITED',None,'s','https://x/'+num,num,'2024-01-01','a'*63+num,'p','ORIGINAL',None))
     repo.connection.execute("INSERT INTO financial_document_identity_assignments VALUES(?,?,?,?,?,?,?,?,?)",('a'+num,doc,'ci',None,pub,'VERIFIED','TEST','{}','2024-01-01'))
     repo.connection.execute("INSERT INTO financial_observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",('o'+num,doc,'i','INCOME_STATEMENT','Revenue','2023-01-01','2023-12-31',num,num,None,'UNKNOWN','AS_REPORTED','row','HTML','HIGH','REPORTED'))
+    append_version(repo,'o'+num,doc,'i','INCOME_STATEMENT','Revenue','2023-01-01','2023-12-31',num,num,None,'UNKNOWN','row','HTML','HIGH','REPORTED','p',knowledge_date=pub,created_at=pub)
    self.assertEqual(point_in_time(repo,'i','Revenue','2024-03-01')['normalized_value'],'1')
    self.assertEqual(point_in_time(repo,'i','Revenue','2024-06-01')['normalized_value'],'2'); repo.close()
  def test_migrations_idempotent(self):

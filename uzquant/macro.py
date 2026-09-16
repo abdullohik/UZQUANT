@@ -16,6 +16,7 @@ from xml.etree import ElementTree as ET
 from zipfile import ZipFile
 
 from .repository import Repository, stable_id, utc_now
+from .operations import enforce_source_schema
 
 PARSER_VERSION = "macro-cbu-1.0.0"
 RULES_VERSION = "macro-regime-1.0.0"
@@ -272,7 +273,10 @@ def ingest_macro(settings, fx_dates: list[str] | None = None) -> dict:
             try:
                 payload = _download(url, settings.request_timeout_seconds, settings.retry_attempts, settings.retry_backoff_seconds)
                 document_id = _archive(repo, settings.raw_data_dir, run_id, url, payload, retrieved_at, media_type)
-                processed += _store_values(repo, document_id, retrieved_at, parser(payload))
+                values=parser(payload)
+                observed={"records","period","value","unit"} if values else set()
+                enforce_source_schema(repo,"macro",SOURCE_ID,PARSER_VERSION,document_id,{"records","period","value","unit"},observed)
+                processed += _store_values(repo, document_id, retrieved_at, values)
             except Exception as exc:
                 errors += 1; error_messages.append(f"{url}: {exc}")
         mappings = store_sector_mappings(repo)

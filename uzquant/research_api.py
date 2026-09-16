@@ -29,6 +29,13 @@ def _row(connection, sql, args=()):
     return _decode(connection.execute(sql, args).fetchone())
 
 
+def _health_context(connection):
+    rows=_rows(connection,"SELECT pipeline,status,source,latest_error,last_success_at,expected_refresh_at,updated_at FROM pipeline_health ORDER BY pipeline")
+    rank={"HEALTHY":0,"DEGRADED":1,"STALE":2,"FAILED":3}; state=max((r["status"] for r in rows),key=lambda x:rank[x],default="STALE")
+    affected=[r for r in rows if r["status"]!="HEALTHY"]
+    return {"upstream_health":state,"data_freshness":{r["pipeline"]:r["last_success_at"] for r in rows},"degraded_reason":[r["latest_error"] or r["status"] for r in affected],"affected_source":sorted({r["source"] for r in affected}),"affected_dependencies":[r["pipeline"] for r in affected],"generated_at":max((r["updated_at"] for r in rows),default=None),"as_of":max((r["last_success_at"] or "" for r in rows),default=None) or None}
+
+
 def grounded_report(detail: dict) -> dict:
     identity = detail["identity"]
     signal = detail.get("signal") or {}
@@ -50,6 +57,7 @@ def grounded_report(detail: dict) -> dict:
         "Catalysts": f"{len(detail.get('events', []))} structured research events.",
         "Risks": ", ".join(signal.get("triggered_gates_json", [])) or "No stored gate beyond missing-evidence controls.",
         "Data Quality": str(detail.get("data_quality") or "Unavailable"),
+        "Data Health": str(detail.get("health_context") or "Unavailable"),
         "Confidence": signal.get("confidence", "Unavailable"),
         "Thesis Invalidators": "No executable thesis is asserted while required evidence or validation is unavailable.",
         "Missing Evidence": ", ".join(warnings) or "None recorded.",
@@ -94,7 +102,7 @@ class ResearchService:
                     "risk_gates":signal.get("triggered_gates_json",[]) if signal else [],"liquidity":liquidity})
             def keep(x):
                 return (not filters.get("sector") or x.get("sector")==filters["sector"]) and (not filters.get("signal") or x["signal"]==filters["signal"]) and (not filters.get("liquidity") or (x.get("liquidity") or {}).get("liquidity_state")==filters["liquidity"])
-            return {"api_version":API_VERSION,"status":"OK","count":sum(keep(x) for x in result),"securities":[x for x in result if keep(x)]}
+            return {"api_version":API_VERSION,"status":"OK","health_context":_health_context(repo.connection),"count":sum(keep(x) for x in result),"securities":[x for x in result if keep(x)]}
 
     def security(self, ticker: str):
         with Repository(self.database) as repo:
@@ -105,7 +113,7 @@ class ResearchService:
             quality=_row(c,"SELECT * FROM market_quality_metrics WHERE security_id=? ORDER BY as_of_date DESC,created_at DESC LIMIT 1",(sid,))
             flags=_rows(c,"SELECT * FROM market_quality_flags WHERE security_id=? ORDER BY created_at DESC",(sid,))
             documents=_rows(c,"SELECT d.*,c.validation_status,c.reason entity_check_reason FROM financial_documents d JOIN financial_document_entity_checks c ON c.document_id=d.document_id JOIN financial_document_identity_assignments a ON a.document_id=d.document_id WHERE d.issuer_id=? AND c.validation_status='MATCHED' AND a.assignment_status='VERIFIED' ORDER BY d.period_end DESC",(iid,))
-            financials=_rows(c,"SELECT o.* FROM financial_observations o JOIN financial_document_entity_checks c ON c.document_id=o.document_id AND c.validation_status='MATCHED' JOIN financial_document_identity_assignments a ON a.document_id=o.document_id AND a.assignment_status='VERIFIED' WHERE o.issuer_id=? ORDER BY o.period_end DESC,o.canonical_concept LIMIT 300",(iid,))
+            financials=_rows(c,"SELECT o.* FROM financial_observation_versions o JOIN financial_document_entity_checks c ON c.document_id=o.document_id AND c.validation_status='MATCHED' JOIN financial_document_identity_assignments a ON a.document_id=o.document_id AND a.assignment_status='VERIFIED' WHERE o.issuer_id=? AND o.superseded_by_version_id IS NULL ORDER BY o.period_end DESC,o.canonical_concept LIMIT 300",(iid,))
             metrics=_rows(c,"SELECT * FROM fundamental_metrics WHERE issuer_id=? AND status='AVAILABLE' ORDER BY period_end DESC,metric_name",(iid,))
             valuations=_rows(c,"SELECT * FROM valuation_records WHERE security_id=? ORDER BY valuation_date DESC,method",(sid,))
             attempts=_rows(c,"SELECT * FROM valuation_model_attempts WHERE security_id=? ORDER BY valuation_date DESC,model_name",(sid,))
@@ -131,10 +139,10 @@ class ResearchService:
             if liquidity and liquidity["liquidity_state"] in {"LIQUIDITY_TRAP","UNASSESSABLE"}: warnings.append(liquidity["liquidity_state"])
             if signal and float(signal["confidence"])<50: warnings.append("LOW_CONFIDENCE")
             if identity["security_class_code"]=="PREFERRED" and (not rights_assessment or rights_assessment["classification"]!="RIGHTS_VERIFIED"): warnings.append("RIGHTS_UNVERIFIED")
-            stale=[r[0] for r in c.execute("SELECT pipeline FROM pipeline_health WHERE status IN('STALE','FAILED')")]
+            stale=[r[0] for r in c.execute("SELECT pipeline FROM pipeline_health WHERE status IN('DEGRADED','STALE','FAILED')")]
             if "market_data" in stale: warnings.append("STALE_DATA")
             if "financial_documents" in stale or "financial_normalization" in stale: warnings.append("STALE_FINANCIALS")
-            detail={"api_version":API_VERSION,"as_of":signal["generated_at"] if signal else (market[0]["trade_date"] if market else None),"status":"OK","identity":identity,"market_observations":market,"market_quality":quality,"market_flags":flags,"financial_documents":documents,"normalized_financials":financials,"fundamentals":metrics,"valuation":valuations,"valuation_methods":attempts,"valuation_assumptions":assumptions,"valuation_status":valuation_status,"liquidity":liquidity,"capacity":capacity,"ownership":ownership,"ownership_metrics":ownership_metrics,"rights":rights,"rights_assessment":rights_assessment,"governance":governance,"corporate_actions":actions,"dividends":dividends,"events":events,"factors":factors,"data_quality":next((f for f in factors if f["factor_name"]=="Data Quality"),None),"signal":signal,"signal_history":history,"warnings":warnings,"sources":sources,"source_record_ids":[s["document_id"] for s in sources]}
+            detail={"api_version":API_VERSION,"as_of":signal["generated_at"] if signal else (market[0]["trade_date"] if market else None),"status":"OK","health_context":_health_context(c),"identity":identity,"market_observations":market,"market_quality":quality,"market_flags":flags,"financial_documents":documents,"normalized_financials":financials,"fundamentals":metrics,"valuation":valuations,"valuation_methods":attempts,"valuation_assumptions":assumptions,"valuation_status":valuation_status,"liquidity":liquidity,"capacity":capacity,"ownership":ownership,"ownership_metrics":ownership_metrics,"rights":rights,"rights_assessment":rights_assessment,"governance":governance,"corporate_actions":actions,"dividends":dividends,"events":events,"factors":factors,"data_quality":next((f for f in factors if f["factor_name"]=="Data Quality"),None),"signal":signal,"signal_history":history,"warnings":warnings,"sources":sources,"source_record_ids":[s["document_id"] for s in sources]}
             detail["report"]=grounded_report(detail)
             return detail
 
@@ -155,7 +163,7 @@ class ResearchService:
             repo.initialize(); c=repo.connection
             runs=_rows(c,"SELECT r.*,v.classification validation_classification,v.evidence_outcome FROM portfolio_runs r LEFT JOIN validation_runs v USING(validation_run_id) ORDER BY r.created_at DESC LIMIT 27")
             for run in runs: run["positions"]=_rows(c,"SELECT * FROM portfolio_positions WHERE portfolio_id=? ORDER BY target_weight DESC",(run["portfolio_id"],))
-            return {"api_version":API_VERSION,"status":"OK","runs":runs}
+            return {"api_version":API_VERSION,"status":"OK","health_context":_health_context(c),"runs":runs}
 
     def backtests(self):
         with Repository(self.database) as repo:
@@ -200,4 +208,4 @@ class ResearchService:
             portfolios=_rows(c,"SELECT * FROM shadow_portfolios ORDER BY created_at DESC,portfolio_type")
             for portfolio in portfolios:
                 portfolio["positions"]=_rows(c,"SELECT * FROM paper_positions WHERE shadow_portfolio_id=?",(portfolio["shadow_portfolio_id"],))
-            return {"api_version":API_VERSION,"status":"OK","portfolios":portfolios,"snapshots":_rows(c,"SELECT * FROM prospective_decision_snapshots ORDER BY decision_timestamp DESC LIMIT 100"),"security_states":_rows(c,"SELECT * FROM prospective_security_states ORDER BY rowid DESC LIMIT 500"),"orders":_rows(c,"SELECT * FROM paper_orders ORDER BY submitted_at DESC LIMIT 500"),"fills":_rows(c,"SELECT * FROM paper_fills ORDER BY fill_timestamp DESC LIMIT 500"),"signal_outcomes":_rows(c,"SELECT * FROM paper_signal_outcomes ORDER BY evaluation_timestamp DESC LIMIT 500"),"drift":_rows(c,"SELECT * FROM paper_drift_assessments ORDER BY assessed_at DESC LIMIT 100")}
+            return {"api_version":API_VERSION,"status":"OK","health_context":_health_context(c),"portfolios":portfolios,"snapshots":_rows(c,"SELECT s.*,e.standard evidence_standard,e.payload_sha256 FROM prospective_decision_snapshots s JOIN prospective_snapshot_evidence e USING(prospective_snapshot_id) ORDER BY decision_timestamp DESC LIMIT 100"),"security_states":_rows(c,"SELECT * FROM prospective_security_states ORDER BY rowid DESC LIMIT 500"),"orders":_rows(c,"SELECT * FROM paper_orders ORDER BY submitted_at DESC LIMIT 500"),"fills":_rows(c,"SELECT * FROM paper_fills ORDER BY fill_timestamp DESC LIMIT 500"),"signal_outcomes":_rows(c,"SELECT * FROM paper_signal_outcomes ORDER BY evaluation_timestamp DESC LIMIT 500"),"drift":_rows(c,"SELECT * FROM paper_drift_assessments ORDER BY assessed_at DESC LIMIT 100")}

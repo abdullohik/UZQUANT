@@ -6,6 +6,8 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 from .financial_documents import parse_decimal
 from .financial_taxonomy import map_source_concept
+from .financial_lineage import append_version
+from .operations import enforce_source_schema
 from .repository import Repository,stable_id,utc_now
 from .rse import fetch
 PARSER_VERSION="remediation-c-attachments/1.0.0"
@@ -46,13 +48,16 @@ def ingest_financial_attachments(settings):
    digest=hashlib.sha256(content).hexdigest(); raw_id=stable_id('raw-financial-attachment',f'{url}:{digest}'); target=settings.raw_data_dir/'openinfo'/'attachments'/f'{raw_id}.xlsx'; target.parent.mkdir(parents=True,exist_ok=True)
    if not target.exists(): target.write_bytes(content)
    repo.connection.execute("INSERT OR IGNORE INTO raw_documents VALUES(?,?,?,?,?,?,?,?,?)",(raw_id,"openinfo-attachment",run,url,utc_now(),doc['publication_date'],"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",digest,str(target))); stored+=1
-   rows=list(_xlsx_rows(content)); workbook_text=' '.join(' '.join(r[2]) for r in rows).casefold(); unit='THOUSAND_UZS' if ('thousand soums' in workbook_text or 'thousand uzs' in workbook_text) else None
+   rows=list(_xlsx_rows(content)); observed={"workbook_rows","cells"} if rows and any(r[2] for r in rows) else set()
+   enforce_source_schema(repo,"financial_normalization","openinfo-attachment",PARSER_VERSION,raw_id,{"workbook_rows","cells"},observed)
+   workbook_text=' '.join(' '.join(r[2]) for r in rows).casefold(); unit='THOUSAND_UZS' if ('thousand soums' in workbook_text or 'thousand uzs' in workbook_text) else None
    if unit:
     eid=stable_id('metadata-evidence',f"{doc['document_id']}:unit:{raw_id}")
     repo.connection.execute("INSERT OR REPLACE INTO financial_document_metadata_evidence VALUES(?,?,?,?,?,?,?,?,?,?)",(eid,doc['document_id'],'SOURCE_UNIT',unit,'HIGH',raw_id,url,'workbook header',PARSER_VERSION,utc_now()))
-    for obs in repo.connection.execute("SELECT observation_id,raw_value FROM financial_observations WHERE document_id=?",(doc['document_id'],)).fetchall():
-     number=parse_decimal(obs[1])
-     if number is not None: repo.connection.execute("UPDATE financial_observations SET normalized_value=?,unit='UZS' WHERE observation_id=?",(str(number*Decimal(1000)),obs[0])); scaled+=1
+    for obs in repo.connection.execute("SELECT * FROM financial_observation_versions WHERE document_id=? AND superseded_by_version_id IS NULL",(doc['document_id'],)).fetchall():
+     number=parse_decimal(obs['raw_value'])
+     if number is not None:
+      append_version(repo,obs['observation_id'],doc['document_id'],doc['issuer_id'],obs['statement_type'],obs['canonical_concept'],obs['period_start'],obs['period_end'],obs['raw_value'],str(number*Decimal(1000)),doc['currency'],'UZS',obs['source_location'],obs['extraction_method'],obs['confidence'],obs['value_status'],PARSER_VERSION,obs['validation_state'],obs['taxonomy_version'],'unit-correction/1.0.0'); scaled+=1
    if '/bank/' in doc['source_url']:
     for sheet,rownum,cells in rows:
      label=next((c for c in cells if c and not re.fullmatch(r'[-+]?\d+(?:\.\d+)?',c)),None); nums=[parse_decimal(c) for c in cells if parse_decimal(c) is not None]
@@ -62,7 +67,8 @@ def ingest_financial_attachments(settings):
      raw=str(nums[-1]); location=f"xlsx:{sheet}/row[{rownum}]"; rid=stable_id('financial-raw',f"{doc['document_id']}:{location}")
      repo.connection.execute("INSERT OR IGNORE INTO financial_raw_values VALUES(?,?,?,?,?,?,?,?,?)",(rid,doc['document_id'],'UNKNOWN',label,None,raw,'CURRENT_OR_PERIOD_END',location,'STRUCTURED_XLSX'))
      oid=stable_id('financial-observation',f"{doc['document_id']}:{concept}:{location}"); value=nums[-1]*Decimal(1000) if unit else nums[-1]
-     repo.connection.execute("INSERT OR REPLACE INTO financial_observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(oid,doc['document_id'],doc['issuer_id'],'UNKNOWN',concept,doc['period_start'],doc['period_end'],raw,str(value),doc['currency'],'UZS' if unit else 'SOURCE_UNIT_UNSPECIFIED','AS_REPORTED',location,'STRUCTURED_XLSX','HIGH','REPORTED')); bank_values+=1
+     repo.connection.execute("INSERT OR IGNORE INTO financial_observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(oid,doc['document_id'],doc['issuer_id'],'UNKNOWN',concept,doc['period_start'],doc['period_end'],raw,str(value),doc['currency'],'UZS' if unit else 'SOURCE_UNIT_UNSPECIFIED','AS_REPORTED',location,'STRUCTURED_XLSX','HIGH','REPORTED'))
+     append_version(repo,oid,doc['document_id'],doc['issuer_id'],'UNKNOWN',concept,doc['period_start'],doc['period_end'],raw,str(value),doc['currency'],'UZS' if unit else 'SOURCE_UNIT_UNSPECIFIED',location,'STRUCTURED_XLSX','HIGH','REPORTED',PARSER_VERSION); bank_values+=1
    repo.connection.commit()
   repo.finish_run(run,'SUCCEEDED' if not errors else 'PARTIAL',stored,errors)
   return {'attachments':stored,'scaled_observations':scaled,'bank_observations':bank_values,'errors':errors}

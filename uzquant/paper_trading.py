@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import json,hashlib
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
@@ -98,6 +98,15 @@ def _ids(connection,sql,args=()): return [r[0] for r in connection.execute(sql,a
 def _json_row(row): return {k:row[k] for k in row.keys()} if row else None
 
 
+def reconstruct_snapshot(repo:Repository,snapshot_id:str):
+    row=repo.connection.execute("SELECT * FROM prospective_snapshot_evidence WHERE prospective_snapshot_id=?",(snapshot_id,)).fetchone()
+    if not row: raise KeyError(snapshot_id)
+    keys=("identity_payload_json","raw_documents_payload_json","normalized_financial_payload_json","fundamental_metrics_payload_json","valuation_payload_json","factor_payload_json","liquidity_payload_json","confidence_risk_payload_json","health_freshness_payload_json","portfolio_execution_payload_json")
+    payload={k[:-5]:json.loads(row[k]) for k in keys}
+    digest=hashlib.sha256(json.dumps(payload,sort_keys=True,default=str,separators=(",",":")).encode()).hexdigest()
+    return {"standard":row["standard"],"payload":payload,"payload_sha256":digest,"verified":digest==row["payload_sha256"]}
+
+
 def capture_prospective_state(database:Path,decision_timestamp:datetime|None=None,initial_cash:Decimal=D("20000000")):
     decision_timestamp=decision_timestamp or datetime.now(timezone.utc)
     if decision_timestamp.tzinfo is None: raise ValueError("decision timestamp must be timezone-aware")
@@ -118,6 +127,26 @@ def capture_prospective_state(database:Path,decision_timestamp:datetime|None=Non
         execution={"participation_rate":"0.10","max_fill_days":20,"future_observations_only":True,"spread":"ONLY_IF_OBSERVED","fees":"EXPLICIT_CONFIG_REQUIRED","no_trade":"NO_FILL"}
         versions={"snapshot":MODEL_VERSION,"portfolio":"transparent-portfolio/1.1.0","execution":EXECUTION_VERSION}
         c.execute("INSERT INTO prospective_decision_snapshots VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(snapshot_id,stamp,"INITIALIZATION",json.dumps(health,sort_keys=True),upstream,json.dumps(universe),json.dumps(market),json.dumps(financials),json.dumps(valuations),json.dumps(factors),json.dumps(signals),json.dumps({"initial_cash":str(initial_cash),"styles":list(CONFIGS)},sort_keys=True),json.dumps(execution,sort_keys=True),json.dumps(versions,sort_keys=True),json.dumps(sorted(set(market+financials+valuations+factors+signals))),created))
+        payload={
+          "identity_payload":[dict(r) for r in c.execute("SELECT s.*,i.canonical_issuer_id,i.legal_name FROM securities s JOIN issuers i USING(issuer_id) ORDER BY s.security_id")],
+          "raw_documents_payload":[dict(r) for r in c.execute("SELECT document_id,source_id,source_url,retrieved_at,publication_at,media_type,sha256 FROM raw_documents WHERE document_id IN (SELECT raw_document_id FROM financial_documents WHERE document_id IN (%s)) ORDER BY document_id" % (','.join('?'*len(financials)) if financials else "NULL"),financials)],
+          "normalized_financial_payload":[dict(r) for r in c.execute("SELECT * FROM financial_observation_versions WHERE document_id IN (%s) AND knowledge_date<=? ORDER BY version_id" % (','.join('?'*len(financials)) if financials else "NULL"),financials+[stamp])],
+          "fundamental_metrics_payload":[dict(r) for r in c.execute("SELECT * FROM fundamental_metrics WHERE created_at<=? ORDER BY metric_id",(stamp,))],
+          "valuation_payload":[dict(r) for r in c.execute("SELECT * FROM valuation_records WHERE valuation_id IN (%s) ORDER BY valuation_id" % (','.join('?'*len(valuations)) if valuations else "NULL"),valuations)],
+          "factor_payload":[dict(r) for r in c.execute("SELECT * FROM factor_scores WHERE factor_score_id IN (%s) ORDER BY factor_score_id" % (','.join('?'*len(factors)) if factors else "NULL"),factors)],
+          "liquidity_payload":[dict(r) for r in c.execute("SELECT * FROM liquidity_assessments WHERE created_at<=? ORDER BY assessment_id",(stamp,))],
+          "confidence_risk_payload":[dict(r) for r in c.execute("SELECT * FROM research_signals WHERE signal_id IN (%s) ORDER BY signal_id" % (','.join('?'*len(signals)) if signals else "NULL"),signals)],
+          "health_freshness_payload":health,
+          "portfolio_execution_payload":{"portfolio":{"initial_cash":str(initial_cash),"styles":list(CONFIGS)},"execution":execution,"versions":versions},
+        }
+        digest=hashlib.sha256(json.dumps(payload,sort_keys=True,default=str,separators=(",",":")).encode()).hexdigest()
+        c.execute("INSERT INTO prospective_snapshot_evidence VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(str(uuid.uuid4()),snapshot_id,"FULL_FREEZE_V1",*[json.dumps(payload[k],sort_keys=True,default=str) for k in payload],digest,created))
+        for signal_id in signals:
+            signal_row=c.execute("SELECT security_id FROM research_signals WHERE signal_id=?",(signal_id,)).fetchone()
+            if not signal_row: continue
+            issuer=c.execute("SELECT issuer_id FROM securities WHERE security_id=?",(signal_row[0],)).fetchone()[0]
+            for version in c.execute("SELECT version_id FROM financial_observation_versions WHERE issuer_id=? AND knowledge_date<=?",(issuer,stamp)):
+                c.execute("INSERT OR IGNORE INTO signal_observation_lineage VALUES(?,?,?,?)",(signal_id,version[0],"EXACT",created))
         captured=0
         for sid in universe:
             signal=c.execute("SELECT * FROM research_signals WHERE security_id=? AND generated_at<=? ORDER BY generated_at DESC,signal_id DESC LIMIT 1",(sid,stamp)).fetchone()

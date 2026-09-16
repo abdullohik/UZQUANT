@@ -4,6 +4,7 @@ from dataclasses import replace
 from .config import Settings
 from .repository import Repository,stable_id,utc_now
 from .identity import record_conflict
+from .operations import enforce_source_schema
 from .rse import PARSER_VERSION,SecurityCandidate,fetch,parse_detail_classes,parse_universe
 SOURCE_ID="uzse-public-web"
 REQUIRED={"AGMKP":"UZ700055K015","KASUP":"UZ702866K013","IPKY":"UZ7039920002","UZTL":"UZ7047110000","QZSM":"UZ7029000005"}
@@ -27,6 +28,8 @@ def ingest_security_master(settings):
         try:
             known=utc_now(); body=fetch(settings.rse_universe_url,timeout=settings.request_timeout_seconds,attempts=settings.retry_attempts,backoff=settings.retry_backoff_seconds)
             doc,digest,path=archive(settings.raw_data_dir,body,known,"asking-prices"); repo.add_raw_document((doc,SOURCE_ID,run,settings.rse_universe_url,known,None,"text/html",digest,path))
+            observed={"security_anchor","isin","ticker","issuer_name"} if re.search(rb'/isu_infos/STK\?isu_cd=[A-Z0-9]+',body) else set()
+            enforce_source_schema(repo,"security_master",SOURCE_ID,PARSER_VERSION,doc,{"security_anchor","isin","ticker","issuer_name"},observed)
             candidates={(c.isin,c.ticker):c for c in parse_universe(body)}
             class_map={}; issuer_by_required={c.isin:c.issuer_display_name for c in candidates.values() if c.isin in REQUIRED.values()}
             for isin in REQUIRED.values():

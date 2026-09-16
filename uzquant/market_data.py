@@ -2,6 +2,7 @@ import hashlib,json,uuid
 from datetime import date
 from .market_quality import calculate_quality
 from .repository import Repository,stable_id,utc_now
+from .operations import enforce_source_schema
 from .rse import fetch,parse_daily_history
 PARSER_VERSION="rse-daily-history/1.0.0"
 TICKERS={"AGMK":"UZ7000550002","AGMKP":"UZ700055K015","KASU":"UZ7028660007","KASUP":"UZ702866K013","IPKY":"UZ7039920002","UZTL":"UZ7047110000","QZSM":"UZ7029000005"}
@@ -20,6 +21,8 @@ def ingest_market_data(settings,targets=None,fetcher=fetch):
                 digest=hashlib.sha256(body).hexdigest(); path=settings.raw_data_dir/"uzse"/stamp[:10]/f"market-{isin}-{digest}.html"; path.parent.mkdir(parents=True,exist_ok=True)
                 if not path.exists(): path.write_bytes(body)
                 doc=str(uuid.uuid4()); repo.add_raw_document((doc,"uzse-public-web",run,url,stamp,None,"text/html",digest,str(path)))
+                observed={"date","open","high","low","close","volume"} if b"data.push" in body else set()
+                enforce_source_schema(repo,"market_data","uzse-public-web",PARSER_VERSION,doc,{"date","open","high","low","close","volume"},observed)
                 security=repo.connection.execute("SELECT security_id FROM identifier_history WHERE identifier_type='ISIN' AND identifier_value=? ORDER BY known_at DESC LIMIT 1",(isin,)).fetchone()
                 if not security: raise ValueError(f"security master has no ISIN {isin}")
                 security_id=security[0]; rows=parse_daily_history(body); seen=set()

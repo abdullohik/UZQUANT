@@ -6,8 +6,10 @@ from decimal import Decimal,InvalidOperation
 from html.parser import HTMLParser
 from pathlib import Path
 from .financial_taxonomy import map_source_concept
+from .financial_lineage import append_version
 from .repository import Repository,stable_id,utc_now
 from .identity import RESOLVED,record_conflict,resolve_security_pair
+from .operations import enforce_source_schema
 from .rse import fetch
 
 PARSER_VERSION="openinfo-financial-html/1.1.0"
@@ -78,6 +80,9 @@ def _save(repo,run_id,ticker,path_bits,period_start,period_end,published,perimet
     raw_dir.mkdir(parents=True,exist_ok=True); storage=raw_dir/f"{raw_id}.html"
     if not storage.exists(): storage.write_bytes(content)
     repo.connection.execute("INSERT OR IGNORE INTO raw_documents VALUES(?,?,?,?,?,?,?,?,?)",(raw_id,SOURCE_ID,run_id,url,utc_now(),published,"text/html",digest,str(storage)))
+    try: rows=parse_statement_rows(content); observed={"html_table","financial_rows","numeric_value"}
+    except ValueError: rows=[]; observed={"html_table"} if b"<tr" in content.lower() else set()
+    enforce_source_schema(repo,"financial_documents",SOURCE_ID,PARSER_VERSION,raw_id,{"html_table","financial_rows","numeric_value"},observed)
     resolution=resolve_security_pair(repo,ticker,REPORT_ISINS[ticker],published,utc_now())
     if resolution.status!=RESOLVED:
         conflict=record_conflict(repo,"FINANCIAL_DOCUMENT_IDENTITY_FAILURE","TICKER_ISIN",f"{ticker}|{REPORT_ISINS[ticker]}",published,[],{"status":resolution.status,"reason":resolution.reason,"source_identifier":source_identifier})
@@ -94,15 +99,15 @@ def _save(repo,run_id,ticker,path_bits,period_start,period_end,published,perimet
     repo.connection.execute("INSERT INTO financial_document_entity_checks VALUES(?,?,?,?,?,?,?) ON CONFLICT(document_id) DO UPDATE SET validation_status=excluded.validation_status,reason=excluded.reason,checked_at=excluded.checked_at",(document_id,issuer[0],issuer[1],json.dumps([ticker]),entity_status,entity_reason,utc_now()))
     if not matched:
         return 0,0
-    rows=parse_statement_rows(content); normalized=0
-    repo.connection.execute("DELETE FROM financial_observations WHERE document_id=?",(document_id,))
+    normalized=0
     for row in rows:
         rid=stable_id("financial-raw",f"{document_id}:{row.location}")
         repo.connection.execute("INSERT OR IGNORE INTO financial_raw_values VALUES(?,?,?,?,?,?,?,?,?)",(rid,document_id,row.statement_type,row.label,row.row_code,row.raw_value,"CURRENT_OR_PERIOD_END",row.location,"STRUCTURED_HTML"))
         concept=map_source_concept(row.label,row.row_code,row.statement_type); number=parse_decimal(row.raw_value)
         if concept and number is not None:
             oid=stable_id("financial-observation",f"{document_id}:{concept}:{row.location}")
-            repo.connection.execute("INSERT INTO financial_observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(document_id,canonical_concept,period_end,source_location) DO UPDATE SET normalized_value=excluded.normalized_value,currency=excluded.currency,unit=excluded.unit,confidence=excluded.confidence",(oid,document_id,issuer[0],row.statement_type,concept,period_start,period_end,row.raw_value,str(number),currency,unit,"AS_REPORTED",row.location,"STRUCTURED_HTML","HIGH","REPORTED")); normalized+=1
+            repo.connection.execute("INSERT OR IGNORE INTO financial_observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(oid,document_id,issuer[0],row.statement_type,concept,period_start,period_end,row.raw_value,str(number),currency,unit,"AS_REPORTED",row.location,"STRUCTURED_HTML","HIGH","REPORTED"))
+            append_version(repo,oid,document_id,issuer[0],row.statement_type,concept,period_start,period_end,row.raw_value,str(number),currency,unit,row.location,"STRUCTURED_HTML","HIGH","REPORTED",PARSER_VERSION); normalized+=1
     _validate(repo,document_id)
     return len(rows),normalized
 def _validate(repo,document_id):
@@ -123,7 +128,7 @@ def _validate(repo,document_id):
         if delta>tolerance:
             issue("BALANCE_IDENTITY","ERROR",{"delta":str(delta),"tolerance":str(tolerance)})
 def point_in_time(repo,issuer_id,concept,as_of):
-    return repo.connection.execute("SELECT o.*,d.publication_date FROM financial_observations o JOIN financial_documents d USING(document_id) JOIN financial_document_identity_assignments a USING(document_id) WHERE o.issuer_id=? AND o.canonical_concept=? AND d.publication_date<=? AND a.assignment_status='VERIFIED' ORDER BY o.period_end DESC,d.publication_date DESC LIMIT 1",(issuer_id,concept,as_of)).fetchone()
+    return repo.connection.execute("SELECT o.* FROM financial_observation_versions o JOIN financial_document_identity_assignments a USING(document_id) WHERE o.issuer_id=? AND o.canonical_concept=? AND o.publication_date<=? AND o.knowledge_date<=? AND a.assignment_status='VERIFIED' ORDER BY o.period_end DESC,o.publication_date DESC,o.knowledge_date DESC LIMIT 1",(issuer_id,concept,as_of,as_of)).fetchone()
 def ingest_financial_documents(settings):
     with Repository(settings.database_path) as repo:
         repo.initialize(); repo.ensure_source(SOURCE_ID,"Openinfo Corporate Disclosure Portal","openinfo.uz","PRIMARY","VERIFIED_AUTOMATED",{"format":"structured HTML","attribution_required":True}); run=repo.start_run(SOURCE_ID,PARSER_VERSION); docs=raw=normalized=errors=0; failures=[]
