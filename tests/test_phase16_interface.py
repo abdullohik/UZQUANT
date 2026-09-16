@@ -15,6 +15,7 @@ class FakeService:
     def validation(self): return {"validation":{"classification":"UNRELIABLE"}}
     def pipelines(self): return {"pipelines":[]}
     def operations(self): return {"status":"OK","health":[],"runs":[],"anomalies":[],"alerts":[],"signal_transitions":[]}
+    def paper_trading(self): return {"status":"OK","portfolios":[],"snapshots":[],"security_states":[],"orders":[],"fills":[],"signal_outcomes":[],"drift":[]}
 
 
 def request(app,path):
@@ -65,3 +66,9 @@ def test_phase17_operations_endpoint_is_read_only_and_available():
     status,payload=request(ResearchApplication(FakeService()),"/api/v1/operations")
     assert status["status"].startswith("200")
     assert payload["status"]=="OK" and payload["alerts"]==[]
+
+
+def test_phase18_paper_trading_endpoint_is_read_only_and_available():
+    status,payload=request(ResearchApplication(FakeService()),"/api/v1/paper-trading")
+    assert status["status"].startswith("200")
+    assert payload["status"]=="OK" and payload["fills"]==[]

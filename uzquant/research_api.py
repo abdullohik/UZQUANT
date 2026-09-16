@@ -193,3 +193,11 @@ class ResearchService:
         with Repository(self.database) as repo:
             repo.initialize(); c=repo.connection
             return {"api_version":API_VERSION,"status":"OK","health":_rows(c,"SELECT * FROM pipeline_health ORDER BY pipeline"),"runs":_rows(c,"SELECT * FROM scheduled_pipeline_runs ORDER BY started_at DESC LIMIT 200"),"anomalies":_rows(c,"SELECT * FROM research_anomalies ORDER BY created_at DESC LIMIT 200"),"alerts":_rows(c,"SELECT * FROM research_alerts ORDER BY created_at DESC LIMIT 200"),"signal_transitions":_rows(c,"SELECT * FROM signal_state_transitions ORDER BY changed_at DESC LIMIT 200")}
+
+    def paper_trading(self):
+        with Repository(self.database) as repo:
+            repo.initialize(); c=repo.connection
+            portfolios=_rows(c,"SELECT * FROM shadow_portfolios ORDER BY created_at DESC,portfolio_type")
+            for portfolio in portfolios:
+                portfolio["positions"]=_rows(c,"SELECT * FROM paper_positions WHERE shadow_portfolio_id=?",(portfolio["shadow_portfolio_id"],))
+            return {"api_version":API_VERSION,"status":"OK","portfolios":portfolios,"snapshots":_rows(c,"SELECT * FROM prospective_decision_snapshots ORDER BY decision_timestamp DESC LIMIT 100"),"security_states":_rows(c,"SELECT * FROM prospective_security_states ORDER BY rowid DESC LIMIT 500"),"orders":_rows(c,"SELECT * FROM paper_orders ORDER BY submitted_at DESC LIMIT 500"),"fills":_rows(c,"SELECT * FROM paper_fills ORDER BY fill_timestamp DESC LIMIT 500"),"signal_outcomes":_rows(c,"SELECT * FROM paper_signal_outcomes ORDER BY evaluation_timestamp DESC LIMIT 500"),"drift":_rows(c,"SELECT * FROM paper_drift_assessments ORDER BY assessed_at DESC LIMIT 100")}
