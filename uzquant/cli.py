@@ -20,9 +20,10 @@ from .portfolio import run_sample_portfolios
 from .remediation import record_market_coverage_blocker,record_preferred_rights_assessments,record_share_capital_evidence
 from .remediation_b import run_remediation_b_evidence
 from .remediation_c import ingest_financial_attachments
+from .web import serve
 def main(argv=None):
     parser=argparse.ArgumentParser(prog="uzquant"); sub=parser.add_subparsers(dest="command",required=True)
-    sub.add_parser("init-db"); sub.add_parser("update-security-master"); sub.add_parser("update-market-data"); sub.add_parser("update-financial-documents"); sub.add_parser("calculate-fundamentals"); sub.add_parser("update-corporate-intelligence"); sub.add_parser("update-events"); sub.add_parser("update-macro"); sub.add_parser("export-macro"); sub.add_parser("run-valuations"); sub.add_parser("rank-universe"); sub.add_parser("size-positions"); sub.add_parser("assess-execution"); sub.add_parser("run-backtests"); sub.add_parser("validate-model"); sub.add_parser("construct-portfolios"); sub.add_parser("remediation-a-evidence"); sub.add_parser("remediation-b-evidence"); sub.add_parser("remediation-c-attachments"); liquidity=sub.add_parser("assess-liquidity"); liquidity.add_argument("--position-shares",default="10000"); liquidity.add_argument("--participation-rate",default="0.10"); query=sub.add_parser("query-fundamentals"); query.add_argument("--ticker",required=True)
+    sub.add_parser("init-db"); sub.add_parser("update-security-master"); sub.add_parser("update-market-data"); sub.add_parser("update-financial-documents"); sub.add_parser("calculate-fundamentals"); sub.add_parser("update-corporate-intelligence"); sub.add_parser("update-events"); sub.add_parser("update-macro"); sub.add_parser("export-macro"); sub.add_parser("run-valuations"); sub.add_parser("rank-universe"); sub.add_parser("size-positions"); sub.add_parser("assess-execution"); sub.add_parser("run-backtests"); sub.add_parser("validate-model"); sub.add_parser("construct-portfolios"); sub.add_parser("remediation-a-evidence"); sub.add_parser("remediation-b-evidence"); sub.add_parser("remediation-c-attachments"); liquidity=sub.add_parser("assess-liquidity"); liquidity.add_argument("--position-shares",default="10000"); liquidity.add_argument("--participation-rate",default="0.10"); query=sub.add_parser("query-fundamentals"); query.add_argument("--ticker",required=True); web=sub.add_parser("serve-research"); web.add_argument("--host",default="127.0.0.1"); web.add_argument("--port",type=int,default=8765)
     args=parser.parse_args(argv); configure_logging(); settings=Settings.from_env()
     if args.command=="init-db":
         settings.database_path.parent.mkdir(parents=True,exist_ok=True)
@@ -48,6 +49,7 @@ def main(argv=None):
     elif args.command=="validate-model": result=run_model_validation(settings.database_path)
     elif args.command=="construct-portfolios":
         rows=run_sample_portfolios(settings.database_path); result={"status":"SUCCEEDED","portfolios":len(rows),"constructed":sum(r["result"].status=="CONSTRUCTED" for r in rows),"data_insufficient":sum(r["result"].status=="DATA_INSUFFICIENT" for r in rows)}
+    elif args.command=="serve-research": return serve(settings.database_path,args.host,args.port)
     elif args.command=="run-valuations":
         cases=run_real_validation(settings.database_path); result={"status":"SUCCEEDED","cases":cases,"available":sum(c["status"]=="AVAILABLE" for c in cases),"insufficient":sum(c["status"]=="VALUATION_INSUFFICIENT" for c in cases)}
     elif args.command=="assess-liquidity":

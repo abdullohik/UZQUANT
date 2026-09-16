@@ -19,4 +19,4 @@ uzquant = "uzquant.cli:main"
 include = ["uzquant*"]
 
 [tool.setuptools.package-data]
-uzquant = ["migrations/*.sql"]
+uzquant = ["migrations/*.sql", "static/*.html", "static/*.css", "static/*.js"]
