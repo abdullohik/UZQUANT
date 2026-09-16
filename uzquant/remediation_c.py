@@ -36,7 +36,7 @@ def ingest_financial_attachments(settings):
   )
   repo.connection.commit()
   run=repo.start_run("openinfo-attachment",PARSER_VERSION); stored=scaled=bank_values=errors=0
-  docs=repo.connection.execute("SELECT f.*,r.storage_path FROM financial_documents f JOIN raw_documents r ON r.document_id=f.raw_document_id JOIN financial_document_entity_checks c ON c.document_id=f.document_id AND c.validation_status='MATCHED'").fetchall()
+  docs=repo.connection.execute("SELECT f.*,r.storage_path FROM financial_documents f JOIN raw_documents r ON r.document_id=f.raw_document_id JOIN financial_document_entity_checks c ON c.document_id=f.document_id AND c.validation_status='MATCHED' JOIN financial_document_identity_assignments a ON a.document_id=f.document_id AND a.assignment_status='VERIFIED'").fetchall()
   for doc in docs:
    text=Path(doc['storage_path']).read_text(errors='ignore'); match=re.search(r'https://new-api\.openinfo\.uz/api/v2/reports/export-excel/[^"\\]+',text)
    if not match: continue

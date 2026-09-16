@@ -127,7 +127,7 @@ def _inputs(repo,document_id):
     return values,ids
 def _generic_unavailable(names,reason): return {n:Result(None,reason) for n in names}
 def calculate_document(repo:Repository,document_id:str):
-    doc=repo.connection.execute("SELECT d.*,i.sector FROM financial_documents d JOIN issuers i USING(issuer_id) WHERE document_id=?",(document_id,)).fetchone()
+    doc=repo.connection.execute("SELECT d.*,i.sector FROM financial_documents d JOIN issuers i USING(issuer_id) JOIN financial_document_identity_assignments a USING(document_id) WHERE document_id=? AND a.assignment_status='VERIFIED'",(document_id,)).fetchone()
     if not doc: raise ValueError("unknown document")
     engine=route_sector(doc["source_url"],doc["sector"]); values,ids=_inputs(repo,document_id)
     if engine=="GENERAL": results=compute_general(values)
@@ -153,7 +153,7 @@ def calculate_all(database):
             repo.connection.execute(f"DELETE FROM fundamental_metrics WHERE document_id IN ({marks})",bad)
             repo.connection.execute(f"DELETE FROM accounting_quality_flags WHERE document_id IN ({marks})",bad)
             repo.connection.commit()
-        documents=[r[0] for r in repo.connection.execute("SELECT d.document_id FROM financial_documents d JOIN financial_document_entity_checks c USING(document_id) WHERE c.validation_status='MATCHED'")]
+        documents=[r[0] for r in repo.connection.execute("SELECT d.document_id FROM financial_documents d JOIN financial_document_entity_checks c USING(document_id) JOIN financial_document_identity_assignments a USING(document_id) WHERE c.validation_status='MATCHED' AND a.assignment_status='VERIFIED'")]
         counts={"documents":len(documents),"available":0,"unavailable":0,"triggered_flags":0}
         for document_id in documents:
             _,results,quality,flags=calculate_document(repo,document_id)

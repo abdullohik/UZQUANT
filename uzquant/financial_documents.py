@@ -7,10 +7,12 @@ from html.parser import HTMLParser
 from pathlib import Path
 from .financial_taxonomy import map_source_concept
 from .repository import Repository,stable_id,utc_now
+from .identity import RESOLVED,record_conflict,resolve_security_pair
 from .rse import fetch
 
 PARSER_VERSION="openinfo-financial-html/1.1.0"
 SOURCE_ID="openinfo-disclosure"
+REPORT_ISINS={"AGMK":"UZ7000550002","KASUP":"UZ702866K013","IPKY":"UZ7039920002","UZTL":"UZ7047110000","QZSM":"UZ7029000005"}
 REPORTS=(
  # ticker, portal path, period, publication, perimeter, standard, audit, currency, unit
  ("AGMK","jsc/annual/5218","2023-01-01","2023-12-31","2024-09-25","UNKNOWN","LOCAL_STATUTORY","AUDITED","UZS","SOURCE_UNIT_UNSPECIFIED"),
@@ -70,22 +72,25 @@ def parse_statement_rows(content:bytes)->list[ParsedRow]:
         out.append(ParsedRow(statement,cells[0],code,chosen[1],f"html:row[{index}]/cell[{chosen[0]}]"))
     if not out: raise ValueError("no structured financial rows found")
     return out
-def _issuer_for_ticker(repo,ticker):
-    row=repo.connection.execute("SELECT s.issuer_id,i.legal_name FROM identifier_history h JOIN securities s ON s.security_id=h.security_id JOIN issuers i ON i.issuer_id=s.issuer_id WHERE h.identifier_type='TICKER' AND h.identifier_value=? ORDER BY h.known_at DESC LIMIT 1",(ticker,)).fetchone()
-    if not row: raise ValueError(f"ticker absent from approved security master: {ticker}")
-    return row
 def _save(repo,run_id,ticker,path_bits,period_start,period_end,published,perimeter,standard,audit,currency,unit,content,raw_dir,url):
-    issuer=_issuer_for_ticker(repo,ticker); digest=hashlib.sha256(content).hexdigest(); source_identifier=path_bits.rsplit('/',1)[-1]
+    digest=hashlib.sha256(content).hexdigest(); source_identifier=path_bits.rsplit('/',1)[-1]
     raw_id=stable_id("raw-financial",f"{url}:{digest}"); document_id=stable_id("financial-document",f"{SOURCE_ID}:{source_identifier}:{digest}")
     raw_dir.mkdir(parents=True,exist_ok=True); storage=raw_dir/f"{raw_id}.html"
     if not storage.exists(): storage.write_bytes(content)
     repo.connection.execute("INSERT OR IGNORE INTO raw_documents VALUES(?,?,?,?,?,?,?,?,?)",(raw_id,SOURCE_ID,run_id,url,utc_now(),published,"text/html",digest,str(storage)))
+    resolution=resolve_security_pair(repo,ticker,REPORT_ISINS[ticker],published,utc_now())
+    if resolution.status!=RESOLVED:
+        conflict=record_conflict(repo,"FINANCIAL_DOCUMENT_IDENTITY_FAILURE","TICKER_ISIN",f"{ticker}|{REPORT_ISINS[ticker]}",published,[],{"status":resolution.status,"reason":resolution.reason,"source_identifier":source_identifier})
+        raise ValueError(f"financial document quarantined: {resolution.status} ({conflict})")
+    issuer=repo.connection.execute("SELECT issuer_id,legal_name FROM issuers WHERE issuer_id=?",(resolution.issuer_id,)).fetchone()
     prior=repo.connection.execute("SELECT document_id FROM financial_documents WHERE source_id=? AND source_identifier=? AND content_hash<>? ORDER BY retrieved_at DESC LIMIT 1",(SOURCE_ID,source_identifier,digest)).fetchone()
     revision_status,revises=("REVISED",prior[0]) if prior else ("ORIGINAL",None)
     repo.connection.execute("INSERT INTO financial_documents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_id,source_identifier,content_hash) DO UPDATE SET reporting_perimeter=excluded.reporting_perimeter,period_start=excluded.period_start,period_end=excluded.period_end,publication_date=excluded.publication_date,accounting_standard=excluded.accounting_standard,audit_status=excluded.audit_status,currency=excluded.currency,parser_version=excluded.parser_version",(document_id,issuer[0],raw_id,issuer[1],perimeter,period_start,period_end,published,None,"ANNUAL" if "/annual/" in path_bits else "QUARTERLY","HTML",standard,audit,currency,SOURCE_ID,url,source_identifier,utc_now(),digest,PARSER_VERSION,revision_status,revises))
-    decoded=content.decode("utf-8",errors="replace"); matched=ticker.casefold() in decoded.casefold()
-    entity_status="MATCHED" if matched else "UNVERIFIED"
-    entity_reason="SOURCE_TICKER_PRESENT" if matched else "EXPECTED_TICKER_NOT_FOUND_IN_SOURCE"
+    evidence=json.dumps({"ticker":ticker,"isin":REPORT_ISINS[ticker],"evidence_ids":resolution.evidence_ids,"source_identifier":source_identifier},sort_keys=True)
+    repo.connection.execute("INSERT INTO financial_document_identity_assignments VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(document_id) DO UPDATE SET canonical_issuer_id=excluded.canonical_issuer_id,security_id=excluded.security_id,publication_date=excluded.publication_date,assignment_status=excluded.assignment_status,assignment_method=excluded.assignment_method,evidence_json=excluded.evidence_json,assigned_at=excluded.assigned_at",(str(uuid.uuid4()),document_id,resolution.canonical_issuer_id,resolution.security_id,published,"VERIFIED","EFFECTIVE_DATED_TICKER_AND_ISIN",evidence,utc_now()))
+    matched=True
+    entity_status="MATCHED"
+    entity_reason="EFFECTIVE_DATED_TICKER_AND_ISIN_AGREE"
     repo.connection.execute("INSERT INTO financial_document_entity_checks VALUES(?,?,?,?,?,?,?) ON CONFLICT(document_id) DO UPDATE SET validation_status=excluded.validation_status,reason=excluded.reason,checked_at=excluded.checked_at",(document_id,issuer[0],issuer[1],json.dumps([ticker]),entity_status,entity_reason,utc_now()))
     if not matched:
         return 0,0
@@ -118,7 +123,7 @@ def _validate(repo,document_id):
         if delta>tolerance:
             issue("BALANCE_IDENTITY","ERROR",{"delta":str(delta),"tolerance":str(tolerance)})
 def point_in_time(repo,issuer_id,concept,as_of):
-    return repo.connection.execute("SELECT o.*,d.publication_date FROM financial_observations o JOIN financial_documents d USING(document_id) WHERE o.issuer_id=? AND o.canonical_concept=? AND d.publication_date<=? ORDER BY o.period_end DESC,d.publication_date DESC LIMIT 1",(issuer_id,concept,as_of)).fetchone()
+    return repo.connection.execute("SELECT o.*,d.publication_date FROM financial_observations o JOIN financial_documents d USING(document_id) JOIN financial_document_identity_assignments a USING(document_id) WHERE o.issuer_id=? AND o.canonical_concept=? AND d.publication_date<=? AND a.assignment_status='VERIFIED' ORDER BY o.period_end DESC,d.publication_date DESC LIMIT 1",(issuer_id,concept,as_of)).fetchone()
 def ingest_financial_documents(settings):
     with Repository(settings.database_path) as repo:
         repo.initialize(); repo.ensure_source(SOURCE_ID,"Openinfo Corporate Disclosure Portal","openinfo.uz","PRIMARY","VERIFIED_AUTOMATED",{"format":"structured HTML","attribution_required":True}); run=repo.start_run(SOURCE_ID,PARSER_VERSION); docs=raw=normalized=errors=0; failures=[]

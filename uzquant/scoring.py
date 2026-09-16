@@ -215,7 +215,7 @@ def score_real_universe(database: Path, as_of: date=date(2026,9,15)):
         output=[]
         for s in securities:
             sid,issuer_id,security_class,ticker=s
-            docs=repo.connection.execute("SELECT d.document_id FROM financial_documents d JOIN financial_document_entity_checks c USING(document_id) WHERE d.issuer_id=? AND d.publication_date<=? AND c.validation_status='MATCHED'",(issuer_id,as_of.isoformat())).fetchall()
+            docs=repo.connection.execute("SELECT d.document_id FROM financial_documents d JOIN financial_document_entity_checks c USING(document_id) JOIN financial_document_identity_assignments a USING(document_id) WHERE d.issuer_id=? AND d.publication_date<=? AND c.validation_status='MATCHED' AND a.assignment_status='VERIFIED'",(issuer_id,as_of.isoformat())).fetchall()
             observations=repo.connection.execute("SELECT count(*) FROM market_observations WHERE security_id=? AND trade_date<=? AND series_type='RAW_OBSERVED'",(sid,as_of.isoformat())).fetchone()[0]
             rights=repo.connection.execute("SELECT rights_id,rights_confidence FROM security_rights WHERE security_id=? AND disclosure_date<=? ORDER BY disclosure_date DESC LIMIT 1",(sid,as_of.isoformat())).fetchone()
             ownership=repo.connection.execute("SELECT count(*) FROM ownership_positions WHERE issuer_id=? AND disclosure_date<=? AND ownership_percentage IS NOT NULL",(issuer_id,as_of.isoformat())).fetchone()[0]

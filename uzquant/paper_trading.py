@@ -110,7 +110,7 @@ def capture_prospective_state(database:Path,decision_timestamp:datetime|None=Non
         blockers=[f"{r['pipeline']}:{r['status']}" for r in relevant if r["status"]!="HEALTHY"]
         universe=_ids(c,"SELECT DISTINCT security_id FROM securities ORDER BY security_id")
         market=_ids(c,"SELECT observation_id FROM market_observations WHERE first_seen_at<=? ORDER BY trade_date,observation_id",(stamp,))
-        financials=_ids(c,"SELECT document_id FROM financial_documents WHERE publication_date<=? ORDER BY publication_date,document_id",(day,))
+        financials=_ids(c,"SELECT d.document_id FROM financial_documents d JOIN financial_document_identity_assignments a USING(document_id) WHERE d.publication_date<=? AND a.assignment_status='VERIFIED' ORDER BY d.publication_date,d.document_id",(day,))
         valuations=_ids(c,"SELECT valuation_id FROM valuation_records WHERE valuation_date<=? AND created_at<=? ORDER BY created_at,valuation_id",(day,stamp))
         factors=_ids(c,"SELECT factor_score_id FROM factor_scores WHERE as_of_date<=? AND created_at<=? ORDER BY created_at,factor_score_id",(day,stamp))
         signals=_ids(c,"SELECT signal_id FROM research_signals WHERE generated_at<=? ORDER BY generated_at,signal_id",(stamp,))
@@ -126,7 +126,7 @@ def capture_prospective_state(database:Path,decision_timestamp:datetime|None=Non
             liquidity=c.execute("SELECT * FROM liquidity_assessments WHERE security_id=? AND as_of_date<=? AND created_at<=? ORDER BY created_at DESC LIMIT 1",(sid,day,stamp)).fetchone()
             position=c.execute("SELECT * FROM position_sizing_records WHERE security_id=? AND as_of_date<=? AND created_at<=? ORDER BY created_at DESC LIMIT 1",(sid,day,stamp)).fetchone()
             observation=c.execute("SELECT * FROM market_observations WHERE security_id=? AND first_seen_at<=? ORDER BY trade_date DESC,first_seen_at DESC LIMIT 1",(sid,stamp)).fetchone()
-            docs=[dict(r) for r in c.execute("SELECT document_id,publication_date,period_end,document_type,audit_status,reporting_perimeter FROM financial_documents WHERE issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?) AND publication_date<=? ORDER BY publication_date DESC",(sid,day))]
+            docs=[dict(r) for r in c.execute("SELECT d.document_id,d.publication_date,d.period_end,d.document_type,d.audit_status,d.reporting_perimeter FROM financial_documents d JOIN financial_document_identity_assignments a USING(document_id) WHERE d.issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?) AND d.publication_date<=? AND a.assignment_status='VERIFIED' ORDER BY d.publication_date DESC",(sid,day))]
             factor_rows=[dict(r) for r in c.execute("SELECT factor_name,score,status,transformation,factor_score_id FROM factor_scores WHERE security_id=? AND data_snapshot_id=? ORDER BY factor_name",(sid,signal["data_snapshot_id"]))]
             reasons=list(blockers)
             if signal["signal_state"] not in {"STRONG_BUY","BUY","ACCUMULATE"}: reasons.append("SIGNAL_NOT_ELIGIBLE")

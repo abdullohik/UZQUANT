@@ -19,12 +19,14 @@ class FinancialTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as td:
    repo=Repository(Path(td)/"x.db"); repo.initialize()
    repo.connection.execute("INSERT INTO data_sources VALUES('s','s','x','PRIMARY','VERIFIED_MANUAL','{}')")
-   repo.connection.execute("INSERT INTO issuers(issuer_id,legal_name,resolution_method,created_at) VALUES('i','Issuer','TEST','2020-01-01')")
+   repo.connection.execute("INSERT INTO canonical_issuers VALUES('ci','ACTIVE','2020-01-01')")
+   repo.connection.execute("INSERT INTO issuers(issuer_id,legal_name,resolution_method,created_at,canonical_issuer_id) VALUES('i','Issuer','TEST','2020-01-01','ci')")
    repo.connection.execute("INSERT INTO ingestion_runs(run_id,source_id,started_at,status,parser_version) VALUES('r','s','2020-01-01','RUNNING','p')")
    for num,pub in (("1","2024-02-01"),("2","2024-05-01")):
     raw="r"+num; doc="d"+num
     repo.connection.execute("INSERT INTO raw_documents VALUES(?,?,?,?,?,?,?,?,?)",(raw,'s','r','https://x/'+num,'2024-01-01',pub,'text/html','a'*63+num,'x'))
     repo.connection.execute("INSERT INTO financial_documents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(doc,'i',raw,'Issuer','UNKNOWN','2023-01-01','2023-12-31',pub,None,'ANNUAL','HTML','LOCAL_GAAP','UNAUDITED',None,'s','https://x/'+num,num,'2024-01-01','a'*63+num,'p','ORIGINAL',None))
+    repo.connection.execute("INSERT INTO financial_document_identity_assignments VALUES(?,?,?,?,?,?,?,?,?)",('a'+num,doc,'ci',None,pub,'VERIFIED','TEST','{}','2024-01-01'))
     repo.connection.execute("INSERT INTO financial_observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",('o'+num,doc,'i','INCOME_STATEMENT','Revenue','2023-01-01','2023-12-31',num,num,None,'UNKNOWN','AS_REPORTED','row','HTML','HIGH','REPORTED'))
    self.assertEqual(point_in_time(repo,'i','Revenue','2024-03-01')['normalized_value'],'1')
    self.assertEqual(point_in_time(repo,'i','Revenue','2024-06-01')['normalized_value'],'2'); repo.close()

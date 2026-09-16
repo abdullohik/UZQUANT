@@ -171,7 +171,7 @@ def build_database_snapshot(repo: Repository, decision_timestamp: datetime):
     identifiers=query(f"SELECT identifier_id FROM identifier_history WHERE security_id IN ({placeholders}) AND known_at<=? AND (valid_from IS NULL OR valid_from<=?) AND (valid_to IS NULL OR valid_to>?)",ids+(stamp,day,day))
     prices=query(f"SELECT observation_id FROM market_observations WHERE security_id IN ({placeholders}) AND trade_date<=? AND first_seen_at<=? AND series_type='RAW_OBSERVED'",ids+(day,stamp))
     issuers=query(f"SELECT DISTINCT issuer_id FROM securities WHERE security_id IN ({placeholders})",ids); ip=','.join('?'*len(issuers))
-    financials=query(f"SELECT document_id FROM financial_documents WHERE issuer_id IN ({ip}) AND publication_date<=?",tuple(issuers)+(day,))
+    financials=query(f"SELECT d.document_id FROM financial_documents d JOIN financial_document_identity_assignments a USING(document_id) WHERE d.issuer_id IN ({ip}) AND d.publication_date<=? AND a.assignment_status='VERIFIED'",tuple(issuers)+(day,))
     ownership=query(f"SELECT ownership_id FROM ownership_positions WHERE issuer_id IN ({ip}) AND disclosure_date<=?",tuple(issuers)+(day,))
     rights=query(f"SELECT rights_id FROM security_rights WHERE security_id IN ({placeholders}) AND disclosure_date<=?",ids+(day,))
     events=query(f"SELECT event_id FROM research_events WHERE issuer_id IN ({ip}) AND publication_at<=?",tuple(issuers)+(stamp,))
