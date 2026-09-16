@@ -61,3 +61,19 @@ def map_concept(label:str)->str|None:
     for concept,pattern in RULES:
         if re.search(pattern,value,re.I): return concept
     return None
+
+def map_source_concept(label:str,row_code:str|None=None,statement_type:str|None=None,sector:str|None=None)->str|None:
+    """Deterministic mappings for labels actually observed in approved Openinfo forms."""
+    value=normalize_label(label)
+    # Form row 100 is a balance-sheet construction/capital-investment asset,
+    # never period cash-flow CapEx despite the English portal translation.
+    if statement_type=="BALANCE_SHEET" and row_code=="100" and "capital" in value:
+        return None
+    if statement_type=="BALANCE_SHEET":
+        if row_code=="480" and re.search(r"(?:total|section i).*(?:410|420|430|440|450|460|470)",value): return "Equity"
+        if row_code=="570" and re.search(r"section i total.*500.*510",value): return "Equity"
+        if row_code in {"770","720"} and "section ii total" in value: return "Total Liabilities"
+        if "current liabilities, total" in value: return "Current Liabilities"
+    if statement_type=="INCOME_STATEMENT" and row_code in {"270","320"} and "net profit" in value:
+        return "Net Income"
+    return map_concept(label)

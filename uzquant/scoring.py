@@ -82,7 +82,7 @@ def data_quality_score(e: Evidence) -> FactorScore:
     if not e.shares_outstanding_verified: penalize(15,"UNCERTAIN_SHARES_OUTSTANDING")
     if e.market_observation_count < 60: penalize(15,"WEAK_MARKET_HISTORY")
     if not e.ownership_known: penalize(10,"UNKNOWN_OWNERSHIP")
-    if e.rights_confidence != "HIGH": penalize(10,"UNKNOWN_OR_WEAK_SHARE_RIGHTS")
+    if e.rights_confidence is not None and e.rights_confidence != "HIGH": penalize(10,"UNKNOWN_OR_WEAK_SHARE_RIGHTS")
     if not e.valuation_available: penalize(5,"VALUATION_UNAVAILABLE")
     return FactorScore("Data Quality",{"evidence":e.__dict__,"penalties":penalties},
                        "100_MINUS_DOCUMENTED_EVIDENCE_PENALTIES",max(D("0"),score))
@@ -115,6 +115,16 @@ def catalyst_factor(rows):
     if not supported: return FactorScore("Catalyst",raw,"MAX_SUPPORTED_EVENT_RELEVANCE",None,"NO_DIRECTIONALLY_SUPPORTED_CATALYST")
     best=max(supported,key=lambda r:D(r["catalyst_score"]))
     return FactorScore("Catalyst",raw,"MAX_SUPPORTED_EVENT_RELEVANCE",D(best["catalyst_score"]),source_ids=tuple(r["event_id"] for r in supported))
+
+def governance_factor(rows):
+    """Score only explicitly adverse, high-confidence stored governance evidence."""
+    adverse={"RELATED_PARTY":D("30"),"AUDITOR_CHANGE":D("40"),"LATE_FILING":D("35"),
+             "DILUTION":D("25"),"RESTATEMENT":D("30"),"MINORITY_HOLDER_ISSUE":D("10")}
+    supported=[r for r in rows if r[1] in adverse and r[2] in {"HIGH","MEDIUM"}]
+    raw={"events":[{"event_id":r[0],"event_type":r[1],"confidence":r[2]} for r in rows]}
+    if not supported: return _unavailable("Governance","NO_DIRECTIONALLY_SUPPORTED_GOVERNANCE_EVIDENCE",tuple(r[0] for r in rows))
+    score=min(adverse[r[1]] for r in supported)
+    return FactorScore("Governance",raw,"MIN_DOCUMENTED_ADVERSE_EVENT_SCORE",score,source_ids=tuple(r[0] for r in supported))
 
 
 def aggregate_attractiveness(factors: dict[str,FactorScore], weights=DEFAULT_WEIGHTS,
@@ -205,16 +215,17 @@ def score_real_universe(database: Path, as_of: date=date(2026,9,15)):
         output=[]
         for s in securities:
             sid,issuer_id,security_class,ticker=s
-            docs=repo.connection.execute("SELECT d.document_id FROM financial_documents d LEFT JOIN financial_document_entity_checks c USING(document_id) WHERE d.issuer_id=? AND d.publication_date<=? AND coalesce(c.validation_status,'MATCHED')='MATCHED'",(issuer_id,as_of.isoformat())).fetchall()
+            docs=repo.connection.execute("SELECT d.document_id FROM financial_documents d JOIN financial_document_entity_checks c USING(document_id) WHERE d.issuer_id=? AND d.publication_date<=? AND c.validation_status='MATCHED'",(issuer_id,as_of.isoformat())).fetchall()
             observations=repo.connection.execute("SELECT count(*) FROM market_observations WHERE security_id=? AND trade_date<=? AND series_type='RAW_OBSERVED'",(sid,as_of.isoformat())).fetchone()[0]
             rights=repo.connection.execute("SELECT rights_id,rights_confidence FROM security_rights WHERE security_id=? AND disclosure_date<=? ORDER BY disclosure_date DESC LIMIT 1",(sid,as_of.isoformat())).fetchone()
             ownership=repo.connection.execute("SELECT count(*) FROM ownership_positions WHERE issuer_id=? AND disclosure_date<=? AND ownership_percentage IS NOT NULL",(issuer_id,as_of.isoformat())).fetchone()[0]
             conflicts=repo.connection.execute("SELECT count(*) FROM financial_validation_issues v JOIN financial_documents d USING(document_id) WHERE d.issuer_id=? AND v.issue_type LIKE '%CONFLICT%'",(issuer_id,)).fetchone()[0]
-            valuation=repo.connection.execute("SELECT valuation_id,status,base_value FROM valuation_records WHERE security_id=? AND data_cutoff_date<=? ORDER BY created_at DESC LIMIT 1",(sid,as_of.isoformat())).fetchone()
+            valuation=repo.connection.execute("SELECT valuation_id,status,base_value FROM valuation_records WHERE security_id=? AND data_cutoff_date<=? ORDER BY (status='AVAILABLE') DESC,created_at DESC LIMIT 1",(sid,as_of.isoformat())).fetchone()
             liq=repo.connection.execute("SELECT assessment_id,liquidity_state,liquidity_confidence,hard_flags_json FROM liquidity_assessments WHERE security_id=? AND as_of_date<=? AND participation_rate='0.10' AND position_shares='10000' ORDER BY as_of_date DESC LIMIT 1",(sid,as_of.isoformat())).fetchone()
             ocr=bool(repo.connection.execute("SELECT 1 FROM financial_observations WHERE issuer_id=? AND extraction_method='OCR' LIMIT 1",(issuer_id,)).fetchone())
             verified_shares=bool(repo.connection.execute("SELECT 1 FROM share_capital_observations WHERE security_id=? AND disclosure_date<=? AND effective_date<=? AND verification_status='VERIFIED' AND class_shares_outstanding IS NOT NULL LIMIT 1",(sid,as_of.isoformat(),as_of.isoformat())).fetchone())
-            evidence=Evidence(len(docs),0,conflicts,ocr,verified_shares,observations,bool(ownership),rights[1] if rights else None,bool(valuation and valuation[1]=="AVAILABLE"),liq[2] if liq else None)
+            rights_evidence=(rights[1] if rights else "MISSING") if security_class=="PREFERRED" else None
+            evidence=Evidence(len(docs),0,conflicts,ocr,verified_shares,observations,bool(ownership),rights_evidence,bool(valuation and valuation[1]=="AVAILABLE"),liq[2] if liq else None)
             dq=data_quality_score(evidence); lq=liquidity_score(liq[1] if liq else None,liq[2] if liq else None,liq[0] if liq else None)
             factors={name:_unavailable(name,"INSUFFICIENT_VERIFIED_INPUTS") for name in FACTORS}
             factors["Data Quality"]=dq; factors["Liquidity"]=lq
@@ -235,6 +246,8 @@ def score_real_universe(database: Path, as_of: date=date(2026,9,15)):
             factors["Dividend"]=_unavailable("Dividend","NO_DATE_COMPATIBLE_DIVIDEND_SCORE")
             catalyst_rows=repo.connection.execute("SELECT e.event_id,e.event_type,e.publication_at,c.event_materiality,c.catalyst_relevance,c.catalyst_confidence,c.catalyst_score FROM research_events e JOIN research_event_securities es USING(event_id) JOIN catalyst_assessments c USING(event_id) WHERE es.security_id=? AND e.publication_at<=? ORDER BY e.publication_at",(sid,as_of.isoformat())).fetchall()
             factors["Catalyst"]=catalyst_factor(catalyst_rows)
+            governance_rows=repo.connection.execute("SELECT event_id,event_type,confidence FROM governance_events WHERE issuer_id=? AND disclosure_date<=? ORDER BY disclosure_date",(issuer_id,as_of.isoformat())).fetchall()
+            factors["Governance"]=governance_factor(governance_rows)
             attractiveness,_=aggregate_attractiveness(factors)
             available_count=sum(f.score is not None for f in factors.values())
             conf=confidence_score(dq.score,D("0") if len(docs)<3 else D("100"),D("25") if evidence.liquidity_confidence=="LOW" else D("75"),D("100") if ownership else D("0"),D("100") if evidence.rights_confidence=="HIGH" else D("0"),D("100") if evidence.valuation_available else D("0"),D(available_count)*D("10"))

@@ -5,7 +5,7 @@ from datetime import date,datetime,timezone
 from decimal import Decimal,InvalidOperation
 from html.parser import HTMLParser
 from pathlib import Path
-from .financial_taxonomy import map_concept
+from .financial_taxonomy import map_source_concept
 from .repository import Repository,stable_id,utc_now
 from .rse import fetch
 
@@ -83,11 +83,18 @@ def _save(repo,run_id,ticker,path_bits,period_start,period_end,published,perimet
     prior=repo.connection.execute("SELECT document_id FROM financial_documents WHERE source_id=? AND source_identifier=? AND content_hash<>? ORDER BY retrieved_at DESC LIMIT 1",(SOURCE_ID,source_identifier,digest)).fetchone()
     revision_status,revises=("REVISED",prior[0]) if prior else ("ORIGINAL",None)
     repo.connection.execute("INSERT INTO financial_documents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_id,source_identifier,content_hash) DO UPDATE SET reporting_perimeter=excluded.reporting_perimeter,period_start=excluded.period_start,period_end=excluded.period_end,publication_date=excluded.publication_date,accounting_standard=excluded.accounting_standard,audit_status=excluded.audit_status,currency=excluded.currency,parser_version=excluded.parser_version",(document_id,issuer[0],raw_id,issuer[1],perimeter,period_start,period_end,published,None,"ANNUAL" if "/annual/" in path_bits else "QUARTERLY","HTML",standard,audit,currency,SOURCE_ID,url,source_identifier,utc_now(),digest,PARSER_VERSION,revision_status,revises))
+    decoded=content.decode("utf-8",errors="replace"); matched=ticker.casefold() in decoded.casefold()
+    entity_status="MATCHED" if matched else "UNVERIFIED"
+    entity_reason="SOURCE_TICKER_PRESENT" if matched else "EXPECTED_TICKER_NOT_FOUND_IN_SOURCE"
+    repo.connection.execute("INSERT INTO financial_document_entity_checks VALUES(?,?,?,?,?,?,?) ON CONFLICT(document_id) DO UPDATE SET validation_status=excluded.validation_status,reason=excluded.reason,checked_at=excluded.checked_at",(document_id,issuer[0],issuer[1],json.dumps([ticker]),entity_status,entity_reason,utc_now()))
+    if not matched:
+        return 0,0
     rows=parse_statement_rows(content); normalized=0
+    repo.connection.execute("DELETE FROM financial_observations WHERE document_id=?",(document_id,))
     for row in rows:
         rid=stable_id("financial-raw",f"{document_id}:{row.location}")
         repo.connection.execute("INSERT OR IGNORE INTO financial_raw_values VALUES(?,?,?,?,?,?,?,?,?)",(rid,document_id,row.statement_type,row.label,row.row_code,row.raw_value,"CURRENT_OR_PERIOD_END",row.location,"STRUCTURED_HTML"))
-        concept=map_concept(row.label); number=parse_decimal(row.raw_value)
+        concept=map_source_concept(row.label,row.row_code,row.statement_type); number=parse_decimal(row.raw_value)
         if concept and number is not None:
             oid=stable_id("financial-observation",f"{document_id}:{concept}:{row.location}")
             repo.connection.execute("INSERT INTO financial_observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(document_id,canonical_concept,period_end,source_location) DO UPDATE SET normalized_value=excluded.normalized_value,currency=excluded.currency,unit=excluded.unit,confidence=excluded.confidence",(oid,document_id,issuer[0],row.statement_type,concept,period_start,period_end,row.raw_value,str(number),currency,unit,"AS_REPORTED",row.location,"STRUCTURED_HTML","HIGH","REPORTED")); normalized+=1

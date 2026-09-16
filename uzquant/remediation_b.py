@@ -100,8 +100,8 @@ def audit_financial_entity_assignments(database:Path)->dict:
 
 def record_model_attempt(repo,security_id:str,valuation_date:date,model:str,missing:list[str],failed:list[str],source_ids:list[str]):
  status="REJECTED" if missing or failed else "EXECUTED"; reason=";".join(missing+failed) if status=="REJECTED" else "ALL_REQUIRED_INPUTS_VALIDATED"
- aid=stable_id("valuation-attempt",f"{security_id}:{valuation_date}:{model}:sector-valuation/2.0.0")
- repo.connection.execute("INSERT INTO valuation_model_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(security_id,valuation_date,model_name,model_version) DO UPDATE SET status=excluded.status,missing_inputs_json=excluded.missing_inputs_json,failed_validations_json=excluded.failed_validations_json,reason=excluded.reason,source_record_ids_json=excluded.source_record_ids_json,created_at=excluded.created_at",(aid,security_id,valuation_date.isoformat(),model,status,json.dumps(missing),json.dumps(failed),reason,json.dumps(source_ids),"sector-valuation/2.0.0",utc_now()))
+ aid=stable_id("valuation-attempt",f"{security_id}:{valuation_date}:{model}:sector-valuation/3.0.0")
+ repo.connection.execute("INSERT INTO valuation_model_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(security_id,valuation_date,model_name,model_version) DO UPDATE SET status=excluded.status,missing_inputs_json=excluded.missing_inputs_json,failed_validations_json=excluded.failed_validations_json,reason=excluded.reason,source_record_ids_json=excluded.source_record_ids_json,created_at=excluded.created_at",(aid,security_id,valuation_date.isoformat(),model,status,json.dumps(missing),json.dumps(failed),reason,json.dumps(source_ids),"sector-valuation/3.0.0",utc_now()))
 
 def run_remediation_b_evidence(database:Path)->dict:
  return {"shares":ingest_verified_exchange_shares(database),"entity_checks":audit_financial_entity_assignments(database)}

@@ -153,7 +153,7 @@ def calculate_all(database):
             repo.connection.execute(f"DELETE FROM fundamental_metrics WHERE document_id IN ({marks})",bad)
             repo.connection.execute(f"DELETE FROM accounting_quality_flags WHERE document_id IN ({marks})",bad)
             repo.connection.commit()
-        documents=[r[0] for r in repo.connection.execute("SELECT d.document_id FROM financial_documents d LEFT JOIN financial_document_entity_checks c USING(document_id) WHERE coalesce(c.validation_status,'MATCHED')='MATCHED'")]
+        documents=[r[0] for r in repo.connection.execute("SELECT d.document_id FROM financial_documents d JOIN financial_document_entity_checks c USING(document_id) WHERE c.validation_status='MATCHED'")]
         counts={"documents":len(documents),"available":0,"unavailable":0,"triggered_flags":0}
         for document_id in documents:
             _,results,quality,flags=calculate_document(repo,document_id)
