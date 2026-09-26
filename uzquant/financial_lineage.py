@@ -38,6 +38,61 @@ def current_versions(repo:Repository, document_id:str):
     return repo.connection.execute("SELECT v.* FROM financial_observation_versions v WHERE v.document_id=? AND v.superseded_by_version_id IS NULL ORDER BY v.canonical_concept,v.source_location",(document_id,)).fetchall()
 
 
+def exact_signal_version_ids(repo:Repository, signal_id:str):
+    """Return only normalized observations consumed by a signal's stored factors.
+
+    Factor source IDs may identify fundamental metrics or valuation records.  The
+    former have relational analytical lineage; the latter retain exact immutable
+    financial version IDs in their source payload.  Contextual issuer observations
+    are intentionally excluded.
+    """
+    signal=repo.connection.execute(
+        "SELECT security_id,data_snapshot_id,generated_at FROM research_signals WHERE signal_id=?",
+        (signal_id,),
+    ).fetchone()
+    if not signal: raise KeyError(signal_id)
+    source_ids=set()
+    for row in repo.connection.execute(
+        "SELECT source_record_ids_json FROM factor_scores "
+        "WHERE security_id=? AND data_snapshot_id=? AND created_at=?",
+        (signal[0],signal[1],signal[2]),
+    ):
+        source_ids.update(value for value in json.loads(row[0]) if value)
+    if not source_ids: return ()
+    marks=",".join("?" for _ in source_ids); args=tuple(sorted(source_ids))
+    versions={r[0] for r in repo.connection.execute(
+        f"SELECT observation_version_id FROM analytical_observation_lineage "
+        f"WHERE analytical_record_id IN ({marks})",args
+    )}
+    for row in repo.connection.execute(
+        f"SELECT source_observation_ids_json FROM valuation_records "
+        f"WHERE valuation_id IN ({marks})",args
+    ):
+        versions.update(value for value in json.loads(row[0]) if value)
+    # Legacy valuation rows used stable observation IDs in this field before
+    # immutable version lineage was introduced.  They remain valid historical
+    # records, but must never be mislabeled as exact version IDs or inserted
+    # through the version foreign key.
+    return tuple(sorted(
+        version_id for version_id in versions
+        if repo.connection.execute(
+            "SELECT 1 FROM financial_observation_versions WHERE version_id=?",
+            (version_id,),
+        ).fetchone()
+    ))
+
+
+def link_signal_exact_versions(repo:Repository, signal_id:str, created_at=None):
+    created_at=created_at or utc_now()
+    versions=exact_signal_version_ids(repo,signal_id)
+    for version_id in versions:
+        repo.connection.execute(
+            "INSERT OR IGNORE INTO signal_observation_lineage VALUES(?,?,?,?)",
+            (signal_id,version_id,"EXACT",created_at),
+        )
+    return versions
+
+
 def reconstruct_signal(repo:Repository, signal_id:str):
     signal=repo.connection.execute("SELECT * FROM research_signals WHERE signal_id=?",(signal_id,)).fetchone()
     if not signal: raise KeyError(signal_id)

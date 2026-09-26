@@ -4,9 +4,16 @@ from decimal import Decimal as D
 import pytest
 
 from uzquant.valuation import (DCFScenario, FXInput, INSUFFICIENT, convert_fx,
+    AssumptionInput,
     dcf_sensitivity_grid, dcf_value, dividend_discount, implied_equity_multiple,
     industrial_dcf, mining_scenario, relative_metrics, residual_income,
     route_valuation, validate_consistency)
+
+
+def test_authoritative_source_assumption_requires_citation():
+    AssumptionInput(D("1.25"), "AUTHORITATIVE_SOURCE", "CBU series URL").validate()
+    with pytest.raises(ValueError):
+        AssumptionInput(D("1.25"), "AUTHORITATIVE_SOURCE", None).validate()
 
 
 def scenario(**overrides):

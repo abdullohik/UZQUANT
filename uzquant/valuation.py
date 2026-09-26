@@ -53,7 +53,7 @@ class AssumptionInput:
     source: str | None = None
 
     def validate(self):
-        allowed={"OBSERVED","SOURCE_DERIVED","MODEL_ESTIMATED","CONFIGURABLE_RESEARCH_ASSUMPTION","UNAVAILABLE"}
+        allowed={"OBSERVED","AUTHORITATIVE_SOURCE","SOURCE_DERIVED","MODEL_ESTIMATED","CONFIGURABLE_RESEARCH_ASSUMPTION","UNAVAILABLE"}
         if self.provenance_class not in allowed: raise ValueError("invalid assumption provenance")
         if self.value is not None and self.provenance_class!="UNAVAILABLE" and not self.source:
             raise ValueError("available assumption requires provenance source")
