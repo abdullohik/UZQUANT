@@ -1,4 +1,6 @@
 import argparse,json
+from datetime import date
+from pathlib import Path
 from .config import Settings
 from .logging_config import configure_logging
 from .repository import Repository
@@ -23,9 +25,18 @@ from .remediation_c import ingest_financial_attachments
 from .web import serve
 from .operations import Scheduler,capture_signal_transitions,detect_production_anomalies,production_runners
 from .paper_trading import capture_prospective_state
+from .rse_trade_export import ingest_trade_export
+from .rse_history import backfill_html, import_inbox, mark_job, next_job, plan_history, queue_status
 def main(argv=None):
     parser=argparse.ArgumentParser(prog="uzquant"); sub=parser.add_subparsers(dest="command",required=True)
     sub.add_parser("init-db"); sub.add_parser("update-security-master"); sub.add_parser("update-market-data"); sub.add_parser("update-financial-documents"); sub.add_parser("calculate-fundamentals"); sub.add_parser("update-corporate-intelligence"); sub.add_parser("update-events"); sub.add_parser("update-macro"); sub.add_parser("export-macro"); sub.add_parser("run-valuations"); sub.add_parser("rank-universe"); sub.add_parser("size-positions"); sub.add_parser("assess-execution"); sub.add_parser("run-backtests"); sub.add_parser("validate-model"); sub.add_parser("construct-portfolios"); sub.add_parser("remediation-a-evidence"); sub.add_parser("remediation-b-evidence"); sub.add_parser("remediation-c-attachments"); sub.add_parser("initialize-shadow-portfolios"); liquidity=sub.add_parser("assess-liquidity"); liquidity.add_argument("--position-shares",default="10000"); liquidity.add_argument("--participation-rate",default="0.10"); query=sub.add_parser("query-fundamentals"); query.add_argument("--ticker",required=True); web=sub.add_parser("serve-research"); web.add_argument("--host",default="127.0.0.1"); web.add_argument("--port",type=int,default=8765); ops=sub.add_parser("operations-tick"); ops.add_argument("--force",action="store_true"); ops.add_argument("--pipeline",action="append"); sub.add_parser("operations-check")
+    trade_export=sub.add_parser("import-rse-trade-export"); trade_export.add_argument("--file",required=True); trade_export.add_argument("--begin",required=True); trade_export.add_argument("--end",required=True); trade_export.add_argument("--market",default="STK"); trade_export.add_argument("--search-key")
+    history_plan=sub.add_parser("plan-rse-history"); history_plan.add_argument("--begin",required=True); history_plan.add_argument("--end",required=True); history_plan.add_argument("--market",default="STK")
+    sub.add_parser("next-rse-export")
+    history_mark=sub.add_parser("mark-rse-export"); history_mark.add_argument("--job-id",required=True); history_mark.add_argument("--status",required=True,choices=["SOURCE_BLOCKED","FAILED","PENDING"]); history_mark.add_argument("--details")
+    history_import=sub.add_parser("import-rse-inbox"); history_import.add_argument("--inbox",default="data/import/rse")
+    sub.add_parser("rse-history-status")
+    history_html=sub.add_parser("backfill-rse-html"); history_html.add_argument("--job-limit",type=int,default=1); history_html.add_argument("--pause-seconds",type=float,default=1.0); history_html.add_argument("--ticker",action="append")
     args=parser.parse_args(argv); configure_logging(); settings=Settings.from_env()
     if args.command=="init-db":
         settings.database_path.parent.mkdir(parents=True,exist_ok=True)
@@ -33,6 +44,13 @@ def main(argv=None):
         result={"status":"initialized","database":str(settings.database_path)}
     elif args.command=="update-security-master": result=ingest_security_master(settings)
     elif args.command=="update-market-data": result=ingest_market_data(settings)
+    elif args.command=="import-rse-trade-export": result=ingest_trade_export(settings,Path(args.file),date.fromisoformat(args.begin),date.fromisoformat(args.end),args.market,args.search_key)
+    elif args.command=="plan-rse-history": result=plan_history(settings.database_path,date.fromisoformat(args.begin),date.fromisoformat(args.end),args.market)
+    elif args.command=="next-rse-export": result=next_job(settings.database_path)
+    elif args.command=="mark-rse-export": result=mark_job(settings.database_path,args.job_id,args.status,args.details)
+    elif args.command=="import-rse-inbox": result=import_inbox(settings,Path(args.inbox))
+    elif args.command=="rse-history-status": result=queue_status(settings.database_path)
+    elif args.command=="backfill-rse-html": result=backfill_html(settings,args.job_limit,args.pause_seconds,set(args.ticker or []))
     elif args.command=="update-financial-documents": result=ingest_financial_documents(settings)
     elif args.command=="calculate-fundamentals": result={"status":"SUCCEEDED",**calculate_all(settings.database_path)}
     elif args.command=="update-corporate-intelligence": result=ingest_corporate_intelligence(settings)

@@ -5,6 +5,8 @@ __pycache__/
 data/raw/*
 data/normalized/*
 data/derived/*
+data/import/*
 !data/raw/.gitkeep
 !data/normalized/.gitkeep
 !data/derived/.gitkeep
+!data/import/.gitkeep
