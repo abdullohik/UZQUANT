@@ -190,6 +190,20 @@ def _snapshot_id(repo):
 def _unavailable(name,reason,source_ids=()): return FactorScore(name,{},"NOT_TRANSFORMED",None,reason,tuple(source_ids))
 
 
+def momentum_factor(market_observation_count: int) -> FactorScore:
+    """Describe why production momentum is unavailable without overstating evidence.
+
+    A sufficient count of raw observations does not establish an adjusted return
+    series.  Corporate-action adjustment is a separate evidentiary requirement.
+    """
+    if market_observation_count < 60:
+        return _unavailable("Momentum", "MARKET_HISTORY_BELOW_60_OBSERVATIONS")
+    return _unavailable(
+        "Momentum",
+        "NO_VERIFIED_CORPORATE_ACTION_ADJUSTED_RETURN_SERIES",
+    )
+
+
 def _fundamental_factor(repo, issuer_id, name, metric_names, as_of):
     placeholders=",".join("?" for _ in metric_names)
     rows=repo.connection.execute(
@@ -243,7 +257,7 @@ def score_real_universe(database: Path, as_of: date | None = None):
             factors["Quality"]=_fundamental_factor(repo,issuer_id,"Quality",metrics["Quality"],as_of)
             factors["Growth"]=_fundamental_factor(repo,issuer_id,"Growth",metrics["Growth"],as_of)
             factors["Balance-Sheet Risk"]=_fundamental_factor(repo,issuer_id,"Balance-Sheet Risk",metrics["Balance-Sheet Risk"],as_of)
-            factors["Momentum"]=_unavailable("Momentum","MARKET_HISTORY_BELOW_60_OBSERVATIONS")
+            factors["Momentum"]=momentum_factor(observations)
             factors["Dividend"]=_unavailable("Dividend","NO_DATE_COMPATIBLE_DIVIDEND_SCORE")
             catalyst_rows=repo.connection.execute("SELECT e.event_id,e.event_type,e.publication_at,c.event_materiality,c.catalyst_relevance,c.catalyst_confidence,c.catalyst_score FROM research_events e JOIN research_event_securities es USING(event_id) JOIN catalyst_assessments c USING(event_id) WHERE es.security_id=? AND e.publication_at<=? ORDER BY e.publication_at",(sid,as_of.isoformat())).fetchall()
             factors["Catalyst"]=catalyst_factor(catalyst_rows)
