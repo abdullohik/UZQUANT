@@ -208,7 +208,8 @@ def _fundamental_factor(repo, issuer_id, name, metric_names, as_of):
         source_ids=tuple(v[0] for v in latest.values()))
 
 
-def score_real_universe(database: Path, as_of: date=date(2026,9,15)):
+def score_real_universe(database: Path, as_of: date | None = None):
+    as_of = as_of or date.today()
     with Repository(database) as repo:
         repo.initialize(); snapshot=_snapshot_id(repo)
         securities=repo.connection.execute("SELECT DISTINCT s.security_id,s.issuer_id,s.security_class_code,h.identifier_value ticker FROM securities s JOIN identifier_history h ON h.security_id=s.security_id AND h.identifier_type='TICKER' WHERE EXISTS(SELECT 1 FROM market_observations m WHERE m.security_id=s.security_id) ORDER BY h.identifier_value").fetchall()

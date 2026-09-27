@@ -7,7 +7,7 @@ name = "uzquant"
 version = "0.1.0"
 description = "Provenance-first data foundation for UZQUANT"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["pypdf>=5,<7"]
 
 [project.optional-dependencies]
 dev = ["pytest>=9,<10"]
