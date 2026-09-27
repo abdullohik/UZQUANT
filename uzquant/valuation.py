@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .repository import Repository, stable_id, utc_now
 
-MODEL_VERSION = "sector-valuation/3.0.0"
+MODEL_VERSION = "sector-valuation/3.1.0"
 INSUFFICIENT = "VALUATION_INSUFFICIENT"
 D = Decimal
 
@@ -268,34 +268,96 @@ def _real_reasons(repo: Repository, security_id: str, sector: str, as_of: date) 
     docs = repo.connection.execute("SELECT d.document_id,d.currency,d.reporting_perimeter FROM financial_documents d JOIN financial_document_entity_checks c USING(document_id) JOIN financial_document_identity_assignments a USING(document_id) WHERE d.issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?) AND d.publication_date<=? AND c.validation_status='MATCHED' AND a.assignment_status='VERIFIED' ORDER BY d.period_end DESC,d.publication_date DESC", (security_id,as_of.isoformat())).fetchall()
     reasons, document_ids = [], [r[0] for r in docs]
     if not docs: reasons.append("NO_FINANCIAL_DOCUMENT")
-    else:
-        if any(not r[1] for r in docs): reasons.append("UNVERIFIED_FINANCIAL_CURRENCY")
-        if any(not r[2] or r[2] == "UNKNOWN" for r in docs): reasons.append("UNVERIFIED_REPORTING_PERIMETER")
-        if len(docs) < 2: reasons.append("INSUFFICIENT_FINANCIAL_HISTORY")
-        unit_unknown = repo.connection.execute("SELECT 1 FROM financial_observation_versions WHERE document_id IN (%s) AND superseded_by_version_id IS NULL AND unit='SOURCE_UNIT_UNSPECIFIED' LIMIT 1" % ",".join("?" * len(docs)), document_ids).fetchone()
-        if unit_unknown: reasons.append("UNVERIFIED_FINANCIAL_UNIT")
+    elif len(docs) < 2:
+        reasons.append("INSUFFICIENT_FINANCIAL_HISTORY")
     share = repo.connection.execute("SELECT observation_id,class_shares_outstanding,currency FROM share_capital_observations WHERE security_id=? AND disclosure_date<=? AND effective_date<=? AND verification_status='VERIFIED' AND class_shares_outstanding IS NOT NULL ORDER BY effective_date DESC,disclosure_date DESC LIMIT 1",(security_id,as_of.isoformat(),as_of.isoformat())).fetchone()
     if not share: reasons.append("MISSING_VERIFIED_CLASS_SHARES_OUTSTANDING")
-    if sector in {"GENERAL", "MINING"}:
-        concepts = {r[0] for r in repo.connection.execute("SELECT DISTINCT canonical_concept FROM financial_observation_versions WHERE superseded_by_version_id IS NULL AND issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?)", (security_id,))}
-        for concept in ("Operating Cash Flow", "CapEx", "D&A"):
-            if concept not in concepts: reasons.append("MISSING_" + concept.upper().replace(" ", "_&" if concept == "D&A" else "_"))
     rights = repo.connection.execute("SELECT rights_confidence,voting_rights,dividend_rights FROM security_rights WHERE security_id=? ORDER BY disclosure_date DESC LIMIT 1", (security_id,)).fetchone()
     klass = repo.connection.execute("SELECT security_class_code FROM securities WHERE security_id=?", (security_id,)).fetchone()
     if klass and klass[0] == "PREFERRED" and (not rights or rights[0] != "HIGH" or not rights[2]):
         reasons.append("PREFERRED_SECURITY_RIGHTS_UNVERIFIED")
     observations = [r[0] for r in repo.connection.execute("SELECT version_id FROM financial_observation_versions WHERE superseded_by_version_id IS NULL AND document_id IN (%s)" % (",".join("?" * len(docs)) if docs else "NULL"), document_ids)] if docs else []
     latest = {}
-    for concept,value,currency,unit,oid,document_id in repo.connection.execute("SELECT o.canonical_concept,o.normalized_value,o.currency,o.unit,o.version_id,o.document_id FROM financial_observation_versions o JOIN financial_documents d USING(document_id) JOIN financial_document_entity_checks c USING(document_id) JOIN financial_document_identity_assignments a USING(document_id) WHERE o.superseded_by_version_id IS NULL AND o.issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?) AND d.publication_date<=? AND c.validation_status='MATCHED' AND a.assignment_status='VERIFIED' ORDER BY o.period_end DESC,d.publication_date DESC",(security_id,as_of.isoformat())):
-        latest.setdefault(concept,{"value":value,"currency":currency,"unit":unit,"observation_id":oid,"document_id":document_id})
+    for concept,value,currency,unit,oid,document_id,perimeter,period_end in repo.connection.execute("SELECT o.canonical_concept,o.normalized_value,o.currency,o.unit,o.version_id,o.document_id,d.reporting_perimeter,o.period_end FROM financial_observation_versions o JOIN financial_documents d USING(document_id) JOIN financial_document_entity_checks c USING(document_id) JOIN financial_document_identity_assignments a USING(document_id) WHERE o.superseded_by_version_id IS NULL AND o.issuer_id=(SELECT issuer_id FROM securities WHERE security_id=?) AND d.publication_date<=? AND c.validation_status='MATCHED' AND a.assignment_status='VERIFIED' ORDER BY o.period_end DESC,d.publication_date DESC",(security_id,as_of.isoformat())):
+        latest.setdefault(concept,{"value":value,"currency":currency,"unit":unit,"observation_id":oid,"document_id":document_id,"reporting_perimeter":perimeter,"period_end":period_end})
     assembled={"latest_concepts":latest,"share_capital_observation_id":share[0] if share else None,"class_shares_outstanding":share[1] if share else None}
     if docs and not latest:
         reasons.extend(("NO_NORMALIZED_FINANCIAL_INPUTS","UNVERIFIED_FINANCIAL_UNIT"))
     return sorted(set(reasons)), document_ids, observations, assembled
 
 
-def run_real_validation(database: Path, valuation_date: date = date(2026, 9, 15)):
+def _curve_reference(repo: Repository, as_of: date):
+    return repo.connection.execute(
+        """SELECT v.curve_vintage_id,v.curve_date,p.tenor_days,p.zero_rate_percent,
+                  v.currency,v.rate_basis,v.compounding,v.source_url,v.retrieved_at
+           FROM government_yield_curve_vintages v
+           JOIN government_yield_curve_points p USING(curve_vintage_id)
+           WHERE v.curve_date<=? AND v.retrieved_at<=?
+           ORDER BY v.curve_date DESC,abs(p.tenor_days-3652),p.tenor_days DESC LIMIT 1""",
+        (as_of.isoformat(), as_of.isoformat() + "T23:59:59.999999+00:00"),
+    ).fetchone()
+
+
+def _concept_blockers(assembled: dict, concepts: tuple[str, ...]) -> list[str]:
+    blockers: list[str] = []
+    rows = []
+    for concept in concepts:
+        row = assembled["latest_concepts"].get(concept)
+        if row is None:
+            blockers.append("MISSING_" + concept.upper().replace("D&A", "D_AND_A").replace(" ", "_"))
+        else:
+            rows.append(row)
+            if not row.get("currency"):
+                blockers.append("UNVERIFIED_FINANCIAL_CURRENCY")
+            if row.get("unit") == "SOURCE_UNIT_UNSPECIFIED":
+                blockers.append("UNVERIFIED_FINANCIAL_UNIT")
+            if not row.get("reporting_perimeter") or row.get("reporting_perimeter") == "UNKNOWN":
+                blockers.append("UNVERIFIED_REPORTING_PERIMETER")
+    if len({row.get("document_id") for row in rows}) > 1:
+        blockers.append("CROSS_DOCUMENT_INPUT_COMPATIBILITY_UNVERIFIED")
+    return blockers
+
+
+def _method_blockers(repo: Repository, ticker: str, method: str, base_reasons: list[str],
+                     assembled: dict, curve, as_of: date) -> list[str]:
+    blockers = list(base_reasons)
+    requirements = {
+        "P/B": ("Equity",), "P/TBV": ("Equity", "Intangibles"),
+        "ROE_ADJUSTED_P/B": ("Equity", "Net Income"), "P/E": ("Net Income",),
+        "RESIDUAL_INCOME": ("Equity", "Net Income"),
+        "EV/EBITDA": ("EBITDA", "Short-Term Debt", "Long-Term Debt", "Cash"),
+        "EV/EBIT": ("EBIT", "Short-Term Debt", "Long-Term Debt", "Cash"),
+        "FCF_YIELD": ("Operating Cash Flow", "CapEx"),
+        "INDUSTRIAL_DCF": ("Revenue", "Operating Cash Flow", "CapEx", "D&A", "Short-Term Debt", "Long-Term Debt", "Cash"),
+        "MINING_SCENARIO_DCF": ("Short-Term Debt", "Long-Term Debt", "Cash"),
+    }
+    blockers.extend(_concept_blockers(assembled, requirements.get(method, ())))
+    if method in {"P/B", "P/TBV", "P/E", "ROE_ADJUSTED_P/B", "EV/EBITDA", "EV/EBIT"}:
+        blockers.append("INSUFFICIENT_CREDIBLE_PEER_SET")
+    if method in {"RESIDUAL_INCOME", "DDM", "INDUSTRIAL_DCF", "MINING_SCENARIO_DCF"}:
+        if curve is None:
+            blockers.append("MISSING_AUTHORITATIVE_UZS_RISK_FREE_CURVE")
+        if method in {"RESIDUAL_INCOME", "DDM"}:
+            blockers.extend(("MISSING_EQUITY_RISK_PREMIUM", "MISSING_SECURITY_OR_SECTOR_BETA", "MISSING_SUPPORTED_LONG_TERM_GROWTH"))
+        else:
+            blockers.extend(("MISSING_COST_OF_EQUITY_COMPONENTS", "MISSING_COST_OF_DEBT", "MISSING_TARGET_CAPITAL_STRUCTURE", "MISSING_SUPPORTED_FORECAST_SCENARIOS"))
+    if method == "DDM":
+        dividend = repo.connection.execute(
+            "SELECT 1 FROM dividends WHERE security_id=? AND announcement_date<=? AND dividend_per_share IS NOT NULL LIMIT 1",
+            (assembled.get("security_id"), as_of.isoformat()),
+        ).fetchone() if repo.connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dividends'").fetchone() else None
+        if not dividend:
+            blockers.append("MISSING_VERIFIED_SECURITY_CLASS_DIVIDEND_HISTORY")
+    if method == "MINING_SCENARIO_DCF":
+        blockers.extend(("MISSING_VERIFIED_PRODUCTION", "MISSING_COMMODITY_PRICE_SCENARIOS", "MISSING_UNIT_COST", "MISSING_MINING_CAPEX_FORECAST", "MISSING_FX_SCENARIOS"))
+    if ticker in {"AGMKP", "KASUP"}:
+        blockers.append("PREFERRED_SECURITY_RIGHTS_UNVERIFIED")
+    return sorted(set(blockers))
+
+
+def run_real_validation(database: Path, valuation_date: date | None = None):
     from .remediation_b import record_model_attempt
+    valuation_date = valuation_date or date.today()
     tickers = ("AGMKP", "KASUP", "IPKY", "UZTL", "QZSM")
     with Repository(database) as repo:
         repo.initialize()
@@ -306,19 +368,10 @@ def run_real_validation(database: Path, valuation_date: date = date(2026, 9, 15)
             engine, methods = route_valuation(source_sector)
             method = methods[0]
             reasons, docs, observations, assembled = _real_reasons(repo, row[1], engine, valuation_date)
+            assembled["security_id"] = row[1]
+            curve = _curve_reference(repo, valuation_date)
             for candidate in methods:
-                method_missing=list(reasons)
-                if candidate not in {"INDUSTRIAL_DCF","MINING_SCENARIO_DCF"}:
-                    method_missing=[r for r in method_missing if r not in {"MISSING_CAPEX","MISSING_D&A","MISSING_OPERATING_CASH_FLOW"}]
-                if candidate in {"P/B","P/TBV","ROE_ADJUSTED_P/B"}:
-                    if "Equity" not in assembled["latest_concepts"]: method_missing.append("MISSING_EQUITY")
-                    method_missing.append("MISSING_VERIFIED_PEER_MULTIPLE")
-                elif candidate=="P/E":
-                    if "Net Income" not in assembled["latest_concepts"]: method_missing.append("MISSING_NET_INCOME")
-                    method_missing.append("MISSING_VERIFIED_PEER_MULTIPLE")
-                elif candidate in {"RESIDUAL_INCOME","DDM"}: method_missing.append("MISSING_SOURCEABLE_COST_OF_EQUITY_ASSUMPTIONS")
-                elif candidate in {"INDUSTRIAL_DCF","MINING_SCENARIO_DCF"}: method_missing.append("MISSING_SOURCEABLE_DISCOUNT_RATE_ASSUMPTIONS")
-                else: method_missing.append("MISSING_VERIFIED_RELATIVE_VALUATION_ASSUMPTIONS")
+                method_missing=_method_blockers(repo,row[0],candidate,reasons,assembled,curve,valuation_date)
                 assumptions_rows=repo.connection.execute("SELECT scenario,value,provenance_class,source,assumption_id FROM valuation_assumption_inputs WHERE security_id=? AND method=? AND as_of_date<=? ORDER BY as_of_date DESC",(row[1],candidate,valuation_date.isoformat())).fetchall()
                 scenario_inputs={r[0].casefold():AssumptionInput(D(r[1]) if r[1] is not None else None,r[2],r[3]) for r in assumptions_rows if r[0] in {"BEAR","BASE","BULL"}}
                 result=ValuationResult(INSUFFICIENT,candidate,None,reasons=tuple(sorted(set(method_missing))))
@@ -328,11 +381,25 @@ def run_real_validation(database: Path, valuation_date: date = date(2026, 9, 15)
                     metric=assembled["latest_concepts"].get(concept)
                     result=execute_multiple_method(candidate,D(metric["value"]) if metric else None,D(assembled["class_shares_outstanding"]) if assembled["class_shares_outstanding"] else None,scenario_inputs,metric["currency"] if metric else "UZS",row[0] not in {"AGMKP","KASUP"}) if not method_missing else ValuationResult(INSUFFICIENT,candidate,None,reasons=tuple(sorted(set(method_missing))))
                 final_missing=list(result.reasons) if result.status!= "AVAILABLE" else []
+                available_inputs=sorted(assembled["latest_concepts"])
+                if curve is not None:
+                    available_inputs.append("AUTHORITATIVE_UZS_NOMINAL_GOVERNMENT_ZERO_CURVE")
+                status="EXECUTABLE" if not final_missing else ("PARTIALLY_SUPPORTED" if available_inputs else "UNSUPPORTED")
+                eligibility_id=stable_id("valuation-eligibility",f"{row[1]}:{valuation_date}:{candidate}:{MODEL_VERSION}")
+                repo.connection.execute("INSERT INTO valuation_method_eligibility VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(security_id,valuation_date,method,model_version) DO UPDATE SET status=excluded.status,blocker_codes_json=excluded.blocker_codes_json,available_inputs_json=excluded.available_inputs_json,reference_curve_vintage_id=excluded.reference_curve_vintage_id,assessed_at=excluded.assessed_at",(eligibility_id,row[1],valuation_date.isoformat(),candidate,status,json.dumps(final_missing),json.dumps(available_inputs),curve[0] if curve else None,MODEL_VERSION,utc_now()))
                 record_model_attempt(repo,row[1],valuation_date,candidate,final_missing,[],docs+observations+[r[4] for r in assumptions_rows])
                 vid = stable_id("valuation", f"{row[1]}:{valuation_date}:{candidate}:{MODEL_VERSION}")
                 assumption_json={"inputs":[dict(r) for r in assumptions_rows],"no_assumptions_invented":True}
                 values=(vid,row[1],row[2],valuation_date.isoformat(),valuation_date.isoformat(),json.dumps({"document_ids":docs,"assembled":assembled},sort_keys=True),candidate,engine,result.currency,json.dumps(assumption_json,sort_keys=True),str(result.bear_value) if result.bear_value is not None else None,str(result.base_value) if result.base_value is not None else None,str(result.bull_value) if result.bull_value is not None else None,result.confidence,MODEL_VERSION,result.status,json.dumps(final_missing),json.dumps(docs),json.dumps(observations),utc_now())
                 repo.connection.execute("INSERT INTO valuation_records VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(security_id,valuation_date,method,valuation_model_version) DO UPDATE SET financial_period_inputs_json=excluded.financial_period_inputs_json,assumptions_json=excluded.assumptions_json,bear_value=excluded.bear_value,base_value=excluded.base_value,bull_value=excluded.bull_value,confidence=excluded.confidence,status=excluded.status,insufficiency_reasons_json=excluded.insufficiency_reasons_json,source_document_ids_json=excluded.source_document_ids_json,source_observation_ids_json=excluded.source_observation_ids_json,created_at=excluded.created_at",values)
-                results.append({"ticker":row[0],"security_id":row[1],"engine":engine,"method":candidate,"status":result.status,"reasons":final_missing,"available_inputs":sorted(assembled["latest_concepts"]),"required_share_input":"VERIFIED_CLASS_SHARES_OUTSTANDING","source_document_ids":docs})
+                if candidate in {"P/B","P/TBV","P/E","ROE_ADJUSTED_P/B","EV/EBITDA","EV/EBIT"}:
+                    peer_id=stable_id("valuation-peer-set",f"{vid}:credible-local-peers:{MODEL_VERSION}")
+                    selection=("Version sector-valuation/3.1.0: distinct issuers; same economic sector/business; "
+                               "compatible period, perimeter, currency and units; verified shares and observed price; minimum 3 peers")
+                    peer_evidence={"status":"INSUFFICIENT_CREDIBLE_PEER_SET","minimum_peer_count":3,
+                                   "accepted_peer_count":0,"no_cross_sector_substitution":True,
+                                   "no_duplicate_share_classes_as_independent_issuers":True}
+                    repo.connection.execute("INSERT OR IGNORE INTO valuation_peer_sets VALUES(?,?,?,?,?,?)",(peer_id,vid,valuation_date.isoformat(),selection,json.dumps([]),json.dumps(peer_evidence,sort_keys=True)))
+                results.append({"ticker":row[0],"security_id":row[1],"engine":engine,"method":candidate,"status":result.status,"eligibility":status,"reasons":final_missing,"available_inputs":available_inputs,"risk_free_curve_date":curve[1] if curve else None,"risk_free_reference_tenor_days":curve[2] if curve else None,"risk_free_reference_zero_rate_percent":curve[3] if curve else None,"required_share_input":"VERIFIED_CLASS_SHARES_OUTSTANDING","source_document_ids":docs})
         repo.connection.commit()
         return sorted(results,key=lambda r:r["ticker"])
