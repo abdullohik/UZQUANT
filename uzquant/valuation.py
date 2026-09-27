@@ -256,6 +256,23 @@ def route_valuation(sector: str) -> tuple[str, tuple[str, ...]]:
     return "GENERAL", ("INDUSTRIAL_DCF","EV/EBITDA","EV/EBIT","P/E","P/B","FCF_YIELD","DDM")
 
 
+def _residual_income_source_lineage(repo, assembled, detailed_rows):
+    """Return only the versioned observations actually used by residual income."""
+    exact_rows = [assembled["latest_concepts"].get(name) for name in ("Equity", "Net Income")]
+    exact_rows = [item for item in exact_rows if item]
+    documents = sorted({item["document_id"] for item in exact_rows})
+    assumption_ids = [row[5] for row in detailed_rows]
+    assumption_versions = []
+    if assumption_ids:
+        marks = ",".join("?" for _ in assumption_ids)
+        assumption_versions = [row[0] for row in repo.connection.execute(
+            f"SELECT DISTINCT observation_version_id FROM valuation_assumption_observation_lineage WHERE assumption_id IN ({marks})",
+            assumption_ids,
+        )]
+    observations = sorted({item["observation_id"] for item in exact_rows} | set(assumption_versions))
+    return documents, observations
+
+
 def mining_scenario(production, commodity_price, fx_rate, unit_cost, capex):
     if any(v is None for v in (production, commodity_price, fx_rate, unit_cost, capex)):
         return None
@@ -406,10 +423,9 @@ def run_real_validation(database: Path, valuation_date: date | None = None):
                 valuation_docs = docs
                 valuation_observations = observations
                 if result.status == "AVAILABLE" and candidate == "RESIDUAL_INCOME":
-                    exact_rows = [assembled["latest_concepts"].get(name) for name in ("Equity", "Net Income")]
-                    exact_rows = [item for item in exact_rows if item]
-                    valuation_docs = sorted({item["document_id"] for item in exact_rows})
-                    valuation_observations = sorted({item["observation_id"] for item in exact_rows})
+                    valuation_docs, valuation_observations = _residual_income_source_lineage(
+                        repo, assembled, detailed_rows
+                    )
                 record_model_attempt(repo,row[1],valuation_date,candidate,final_missing,[],valuation_docs+valuation_observations+[r[4] for r in assumptions_rows])
                 vid = stable_id("valuation", f"{row[1]}:{valuation_date}:{candidate}:{MODEL_VERSION}")
                 assumption_json={"inputs":[dict(r) for r in detailed_rows],"no_assumptions_invented":True,

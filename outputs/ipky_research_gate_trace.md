@@ -1,5 +1,7 @@
 # IPKY Research Gate Trace
 
+> Historical pre-correction trace. See `outputs/ipky_full_lineage_after_fix.md` for the current four-factor `REDUCE` research state.
+
 As of: 2026-09-28 Asia/Tashkent  
 Security ID: `9922a46f-208e-50f4-a367-4930fa116e60`  
 Latest signal: `DATA_INSUFFICIENT`, confidence `58.75`, triggered hard gates `[]`

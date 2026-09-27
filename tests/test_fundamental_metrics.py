@@ -1,7 +1,7 @@
 import unittest
 from datetime import date
 from decimal import Decimal as D
-from uzquant.fundamental_metrics import PeriodValue,compute_bank,compute_general,compute_insurance,compute_quality,construct_ttm,growth,historical_growth,route_sector,safe_div
+from uzquant.fundamental_metrics import PeriodValue,_compatible_average,compute_bank,compute_general,compute_insurance,compute_quality,construct_ttm,growth,historical_growth,route_sector,safe_div
 
 class MetricFormulaTests(unittest.TestCase):
  def test_general_formulas(self):
@@ -23,6 +23,16 @@ class MetricFormulaTests(unittest.TestCase):
   self.assertEqual(bank["NIM"].value,D("0.05")); self.assertEqual(bank["Cost/Income"].value,D("0.5"))
   insurer=compute_insurance({"Claims":D(40),"Premiums":D(100),"Underwriting Expenses":D(20)})
   self.assertEqual(insurer["Combined Ratio"].value,D("0.6"))
+ def test_average_equity_requires_compatible_adjacent_periods(self):
+  opening=("open",D("100"),"2022-12-31","UZS","UZS","CONSOLIDATED","IFRS","AUDITED","v1")
+  closing=("close",D("140"),"2023-12-31","UZS","UZS","CONSOLIDATED","IFRS","AUDITED","v2")
+  self.assertEqual(_compatible_average(opening,closing),D("120"))
+  currency_mismatch=tuple("USD" if i==3 else value for i,value in enumerate(closing))
+  perimeter_mismatch=tuple("STANDALONE" if i==5 else value for i,value in enumerate(closing))
+  period_mismatch=tuple("2024-12-31" if i==2 else value for i,value in enumerate(closing))
+  self.assertIsNone(_compatible_average(opening,currency_mismatch))
+  self.assertIsNone(_compatible_average(opening,perimeter_mismatch))
+  self.assertIsNone(_compatible_average(opening,period_mismatch))
  def test_ttm_compatible_nonoverlapping(self):
   ranges=((date(2025,1,1),date(2025,3,31)),(date(2025,4,1),date(2025,6,30)),(date(2025,7,1),date(2025,9,30)),(date(2025,10,1),date(2025,12,31)))
   periods=[PeriodValue(a,b,D(10),"UZS","ONES","STANDALONE","IFRS") for a,b in ranges]

@@ -1,5 +1,7 @@
 # IPKY Complete Company Research View
 
+> Historical pre-correction report. See `outputs/ipky_full_lineage_after_fix.md` for the current lineage and research state.
+
 Research date: 2026-09-28 Asia/Tashkent  
 Issuer: AITB “Ipak Yo'li”  
 Security: IPKY common equity, nominal currency UZS  

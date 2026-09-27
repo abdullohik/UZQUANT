@@ -12,12 +12,13 @@ from pathlib import Path
 
 from .config import Settings
 from .financial_lineage import append_version
+from .identity import RESOLVED, resolve_security_pair
 from .repository import Repository, stable_id, utc_now
 from .rse import fetch
 from .valuation import residual_income, run_real_validation, MODEL_VERSION
 
-PARSER_VERSION = "audited-pdf-evidence/1.0.0"
-ASSUMPTION_VERSION = "ipky-residual-income/1.0.0"
+PARSER_VERSION = "audited-pdf-evidence/1.1.0"
+ASSUMPTION_VERSION = "ipky-residual-income/1.1.0"
 SOURCE_ID = "openinfo-audited-financial-pdf"
 IPKY_2023_URL = "https://openinfo.uz/media/audit_conclusion/Аудиторское_заключение_МСФО_2023_DxdUBfo.pdf"
 DAMODARAN_COUNTRY_URL = "https://pages.stern.nyu.edu/adamodar/New_Home_Page/datafile/ctryprem.html"
@@ -58,17 +59,27 @@ def extract_ipky_2023_pdf(payload: bytes) -> dict:
         current = Decimal("".join(groups[:digit_groups])) * Decimal(1_000_000)
         prior = Decimal("".join(groups[digit_groups:])) * Decimal(1_000_000)
         values[concept] = (current, prior, match.group(0).strip())
+    opening_match = re.search(r"Остаток\s+на\s+31\s+декабря\s+2021\s+года[^\n]*", text, re.I)
+    if not opening_match:
+        raise ValueError("2021 opening equity evidence not found")
+    opening_tokens = re.findall(r"(?<!\d)\d{1,3}(?!\d)", opening_match.group(0))
+    if len(opening_tokens) < 3:
+        raise ValueError("2021 opening equity value not found")
+    opening_equity = Decimal("".join(opening_tokens[-3:])) * Decimal(1_000_000)
     return {"text": text, "values": values, "perimeter": "CONSOLIDATED",
-            "accounting_standard": "IFRS", "currency": "UZS", "unit": "MILLION_UZS"}
+            "accounting_standard": "IFRS", "currency": "UZS", "unit": "MILLION_UZS",
+            "opening_equity_2021": (opening_equity, opening_match.group(0).strip())}
 
 
 def _ipky_identity(repo: Repository):
+    resolution = resolve_security_pair(repo, "IPKY", "UZ7039920002", "2024-12-11", utc_now())
+    if resolution.status != RESOLVED:
+        raise ValueError(f"IPKY ticker/ISIN identity not resolved: {resolution.status}:{resolution.reason}")
     return repo.connection.execute(
         """SELECT s.security_id,s.issuer_id,i.canonical_issuer_id,i.legal_name
              FROM securities s JOIN issuers i USING(issuer_id)
-             JOIN identifier_history h USING(security_id)
-            WHERE h.identifier_type='TICKER' AND h.identifier_value='IPKY'
-            ORDER BY h.known_at DESC LIMIT 1"""
+            WHERE s.security_id=? AND s.issuer_id=? AND i.canonical_issuer_id=?""",
+        (resolution.security_id,resolution.issuer_id,resolution.canonical_issuer_id),
     ).fetchone()
 
 
@@ -165,6 +176,25 @@ def ingest_ipky_audited_pdf(settings: Settings) -> dict:
                                    PARSER_VERSION, "MATCHED", "financial-taxonomy/1.0.0",
                                    "million-uzs-explicit/1.0.0")
                     inserted += 1
+            opening, raw_line = parsed["opening_equity_2021"]
+            location = "pdf:audited-statement/Equity/OPENING_COMPARATIVE"
+            raw_value = str(opening / Decimal(1_000_000))
+            raw_value_id = stable_id("financial-raw", f"{document_id}:{location}")
+            repo.connection.execute("INSERT OR IGNORE INTO financial_raw_values VALUES(?,?,?,?,?,?,?,?,?)",
+                                    (raw_value_id, document_id, "BALANCE_SHEET", raw_line, None,
+                                     raw_value, "OPENING_COMPARATIVE", location, "MACHINE_READABLE_PDF"))
+            observation_id = stable_id("financial-observation", f"{document_id}:Equity:{location}")
+            repo.connection.execute("INSERT OR IGNORE INTO financial_observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                    (observation_id, document_id, identity["issuer_id"], "BALANCE_SHEET",
+                                     "Equity", "2021-01-01", "2021-12-31", raw_value, str(opening),
+                                     "UZS", "UZS", "AS_REPORTED", location, "MACHINE_READABLE_PDF",
+                                     "HIGH", "REPORTED"))
+            append_version(repo, observation_id, document_id, identity["issuer_id"], "BALANCE_SHEET",
+                           "Equity", "2021-01-01", "2021-12-31", raw_value, str(opening),
+                           "UZS", "UZS", location, "MACHINE_READABLE_PDF", "HIGH", "REPORTED",
+                           PARSER_VERSION, "MATCHED", "financial-taxonomy/1.0.0",
+                           "million-uzs-explicit/1.0.0")
+            inserted += 1
             repo.connection.commit()
             repo.finish_run(run_id, "SUCCEEDED", inserted, 0,
                             json.dumps({"document_id": document_id, "perimeter": "CONSOLIDATED"}))
@@ -178,21 +208,50 @@ def ingest_ipky_audited_pdf(settings: Settings) -> dict:
 
 def _store_assumption(repo: Repository, security_id: str, input_name: str, scenario: str,
                       value: Decimal, provenance: str, source: str, source_date: str,
-                      source_url: str, methodology: str, derivation: dict, confidence: str):
+                      source_url: str, methodology: str, derivation: dict, confidence: str,
+                      observation_lineage=()):
     assumption_id = stable_id("valuation-assumption", f"{security_id}:RESIDUAL_INCOME:{input_name}:{scenario}:2026-09-27:{ASSUMPTION_VERSION}")
     repo.connection.execute(
-        "INSERT OR IGNORE INTO valuation_assumption_inputs VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO valuation_assumption_inputs VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(security_id,method,input_name,scenario,as_of_date) DO UPDATE SET "
+        "value=excluded.value,provenance_class=excluded.provenance_class,source=excluded.source,created_at=excluded.created_at",
         (assumption_id, security_id, "RESIDUAL_INCOME", input_name, scenario, str(value),
          "UZS" if input_name in {"BOOK_VALUE", "SHARES_OUTSTANDING"} else None,
          "2026-09-27", provenance, source, utc_now()),
     )
+    assumption_id = repo.connection.execute(
+        "SELECT assumption_id FROM valuation_assumption_inputs WHERE security_id=? AND method=? AND input_name=? AND scenario=? AND as_of_date=?",
+        (security_id, "RESIDUAL_INCOME", input_name, scenario, "2026-09-27"),
+    ).fetchone()[0]
     repo.connection.execute(
-        "INSERT OR IGNORE INTO valuation_assumption_details VALUES(?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO valuation_assumption_details VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(assumption_id) DO UPDATE SET nominal_real_basis=excluded.nominal_real_basis,source_date=excluded.source_date,source_url=excluded.source_url,methodology=excluded.methodology,derivation_json=excluded.derivation_json,confidence=excluded.confidence,assumption_version=excluded.assumption_version,created_at=excluded.created_at",
         (assumption_id, "NOMINAL" if input_name in {"COST_OF_EQUITY", "GROWTH"} else "NOT_APPLICABLE",
          source_date, source_url, methodology, json.dumps(derivation, sort_keys=True), confidence,
          ASSUMPTION_VERSION, utc_now()),
     )
+    repo.connection.execute("DELETE FROM valuation_assumption_observation_lineage WHERE assumption_id=?",(assumption_id,))
+    for role,version_id,transformation in observation_lineage:
+        repo.connection.execute("INSERT INTO valuation_assumption_observation_lineage VALUES(?,?,?,?,?)",
+                                (assumption_id,version_id,role,transformation,utc_now()))
     return assumption_id
+
+
+def _ipky_roe_evidence(repo: Repository):
+    document_id = stable_id("financial-document", f"{SOURCE_ID}:IPKY:2023:{repo.connection.execute('SELECT content_hash FROM financial_documents WHERE source_url=? ORDER BY retrieved_at DESC LIMIT 1',(IPKY_2023_URL,)).fetchone()[0]}")
+    rows=repo.connection.execute(
+        "SELECT version_id,canonical_concept,period_end,normalized_value,currency,unit,reporting_perimeter,accounting_standard,audit_status,publication_date,knowledge_date "
+        "FROM financial_observation_versions WHERE document_id=? AND superseded_by_version_id IS NULL "
+        "AND canonical_concept IN ('Equity','Net Income') ORDER BY period_end,canonical_concept",(document_id,)).fetchall()
+    evidence={(row[1],row[2]):row for row in rows}
+    required=(("Equity","2021-12-31"),("Equity","2022-12-31"),("Equity","2023-12-31"),
+              ("Net Income","2022-12-31"),("Net Income","2023-12-31"))
+    if any(key not in evidence for key in required): raise ValueError("complete IPKY ROE evidence missing")
+    metadata={(evidence[key][4],evidence[key][5],evidence[key][6],evidence[key][7],evidence[key][8]) for key in required}
+    if metadata!={("UZS","UZS","CONSOLIDATED","IFRS","AUDITED")}:
+        raise ValueError("IPKY ROE evidence metadata mismatch")
+    if any(evidence[key][9]>"2026-09-27" or evidence[key][10]>"2026-09-27T23:59:59.999999+00:00" for key in required):
+        raise ValueError("IPKY ROE evidence is not point-in-time eligible")
+    return evidence
 
 
 def store_ipky_residual_income_assumptions(database: Path) -> dict:
@@ -206,10 +265,15 @@ def store_ipky_residual_income_assumptions(database: Path) -> dict:
         ).fetchone()
         if identity is None or curve is None:
             raise ValueError("IPKY identity or CBU curve unavailable")
-        equity = Decimal("2817695000000")
+        evidence=_ipky_roe_evidence(repo)
+        value=lambda concept,period:Decimal(evidence[(concept,period)][3])
+        version=lambda concept,period:evidence[(concept,period)][0]
+        equity = value("Equity","2023-12-31")
         shares = Decimal("60239945264")
-        roe_2022 = Decimal("522935000000") / ((Decimal("1491673000000") + Decimal("2133021000000")) / 2)
-        roe_2023 = Decimal("731342000000") / ((Decimal("2133021000000") + equity) / 2)
+        average_equity_2022=(value("Equity","2021-12-31")+value("Equity","2022-12-31"))/2
+        average_equity_2023=(value("Equity","2022-12-31")+equity)/2
+        roe_2022 = value("Net Income","2022-12-31") / average_equity_2022
+        roe_2023 = value("Net Income","2023-12-31") / average_equity_2023
         normalized_roe = (roe_2022 + roe_2023) / 2
         government_effective = (Decimal(str(curve["zero_rate_percent"])) / 100).exp() - 1
         default_spread = Decimal("0.0306")
@@ -223,10 +287,16 @@ def store_ipky_residual_income_assumptions(database: Path) -> dict:
             ("BASE", normalized_roe, base_cost, Decimal("0.05")),
             ("BULL", max(roe_2022, roe_2023), base_cost - Decimal("0.02"), Decimal("0.06")),
         ):
+            if scenario=="BEAR":
+                roe_lineage=(("OPENING_EQUITY",version("Equity","2021-12-31"),"AVERAGE_EQUITY=(OPENING_EQUITY+CLOSING_EQUITY)/2"),("CLOSING_EQUITY",version("Equity","2022-12-31"),"AVERAGE_EQUITY=(OPENING_EQUITY+CLOSING_EQUITY)/2"),("NET_INCOME",version("Net Income","2022-12-31"),"ROE=NET_INCOME/AVERAGE_EQUITY"))
+            elif scenario=="BULL":
+                roe_lineage=(("OPENING_EQUITY",version("Equity","2022-12-31"),"AVERAGE_EQUITY=(OPENING_EQUITY+CLOSING_EQUITY)/2"),("CLOSING_EQUITY",version("Equity","2023-12-31"),"AVERAGE_EQUITY=(OPENING_EQUITY+CLOSING_EQUITY)/2"),("NET_INCOME",version("Net Income","2023-12-31"),"ROE=NET_INCOME/AVERAGE_EQUITY"))
+            else:
+                roe_lineage=(("OPENING_EQUITY_2022",version("Equity","2021-12-31"),"NORMALIZED_ROE=MEAN(ROE_2022,ROE_2023)"),("CLOSING_EQUITY_2022_OPENING_EQUITY_2023",version("Equity","2022-12-31"),"NORMALIZED_ROE=MEAN(ROE_2022,ROE_2023)"),("CLOSING_EQUITY_2023",version("Equity","2023-12-31"),"NORMALIZED_ROE=MEAN(ROE_2022,ROE_2023)"),("NET_INCOME_2022",version("Net Income","2022-12-31"),"NORMALIZED_ROE=MEAN(ROE_2022,ROE_2023)"),("NET_INCOME_2023",version("Net Income","2023-12-31"),"NORMALIZED_ROE=MEAN(ROE_2022,ROE_2023)"))
             ids.append(_store_assumption(repo, identity["security_id"], "ROE", scenario, roe,
                          "SOURCE_DERIVED", "IPKY audited IFRS 2023 and comparatives", "2024-12-11",
                          IPKY_2023_URL, "Two-year ROE using reported net income divided by average opening/closing equity",
-                         {"roe_2022": str(roe_2022), "roe_2023": str(roe_2023)}, "LOW"))
+                         {"opening_equity_2021":str(value("Equity","2021-12-31")),"closing_equity_2022":str(value("Equity","2022-12-31")),"closing_equity_2023":str(equity),"net_income_2022":str(value("Net Income","2022-12-31")),"net_income_2023":str(value("Net Income","2023-12-31")),"average_equity_2022":str(average_equity_2022),"average_equity_2023":str(average_equity_2023),"roe_2022": str(roe_2022), "roe_2023": str(roe_2023)}, "LOW",roe_lineage))
             ids.append(_store_assumption(repo, identity["security_id"], "COST_OF_EQUITY", scenario, cost,
                          "MODEL_ESTIMATED", "CBU curve plus Damodaran 2026 country-risk and global bank-beta data", "2026-09-23",
                          DAMODARAN_COUNTRY_URL, "Effective nominal UZS reference less sovereign default spread plus beta times mature ERP plus country-risk premium; +/-2pp sensitivity",

@@ -2,20 +2,16 @@
 
 ## Software limitations
 
-- Canonical issuer IDs are currently derived from normalized legal name, creating a critical silent-collision risk.
-- Financial reports are resolved by ticker without publication-date validity or corroborating permanent issuer identifiers.
-- A ticker string occurring in a document is insufficient entity verification.
-- Normalized financial observations can be deleted and recreated/updated under the same logical identity during reparse.
-- Prospective snapshots do not embed a complete immutable normalized-financial payload.
-- Generic source-schema checks are not wired into production parser boundaries.
-- `DEGRADED` dependencies are not treated as blocking/stale by the generic scheduler and are omitted from security freshness warnings.
+- Historical signal lineage created before immutable observation versioning is explicitly `LEGACY_INFERRED`; it cannot be made exact retroactively.
+- The original Phase 18 prospective snapshot is explicitly `LEGACY_SNAPSHOT_LIMITED`; it was not rewritten.
+- Production source-schema enforcement and exact signal lineage pass adversarial tests; exact financial lineage is now exercised by the IPKY corrective chain. A real breaking-schema incident after the durability fix has not occurred, so that operational behavior remains test-verified rather than incident-verified.
 - The event/anomaly engine covers only a conservative subset of planned anomaly families.
 - External scheduling, authentication, multi-user authorization, deployment hardening, backups, recovery drills, and alert delivery are not implemented.
 - Paper dividends have deterministic accounting mechanics but no end-to-end scheduled portfolio event processor; broader corporate actions are incomplete.
 
 ## Source-data limitations
 
-- RSE automation is currently unavailable; the security master is `FAILED` and direct dependants are `STALE`.
+- Current production health is 17/17 `HEALTHY` after the policy-compliant RSE historical-HTML fallback recovered normal processing. Historical outages and stale propagation remain preserved.
 - RSE is registered `PARTIAL`, and no supported official bulk market-data API is verified.
 - Historical bid/ask, depth, queue position, intraday continuity, and price-limit histories are unavailable.
 - Reporting perimeter is unknown for 16 of 17 financial documents.

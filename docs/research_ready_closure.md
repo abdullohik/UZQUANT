@@ -1,5 +1,7 @@
 # UZQUANT Research-Ready Closure
 
+> Historical checkpoint evidence. This pre-correction assessment is superseded by `docs/research_ready_corrective_closure.md`; its original conclusion and then-current IPKY state are retained for audit history.
+
 Audit date: 2026-09-28 (Asia/Tashkent)  
 Scope: the unchanged `RESEARCH_READY` rubric in `docs/readiness.md`  
 Conclusion: **RESEARCH_READY — LIMITED MINIMUM-VIABLE COHORT (IPKY)**

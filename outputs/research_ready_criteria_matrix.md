@@ -1,5 +1,7 @@
 # Research-Ready Criteria Matrix
 
+> Historical pre-correction matrix. See `outputs/research_ready_post_correction.md` for the current result.
+
 | Requirement | Status | Launch critical | Classification if unresolved | Resolution in this closure |
 |---|---|---|---|---|
 | Legitimate current source and stable fresh cycles | PASS | Yes | CURRENT_OPERATION_FIXABLE | Current normal cycle succeeded; all 17 health rows healthy; repeated healthy cycles retained |

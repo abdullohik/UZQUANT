@@ -2,15 +2,17 @@
 
 ## Governing conclusion
 
-Model risk is dominated by entity integrity and missing evidence, not by measured return instability. No performance sample exists, so absence of observed failure must not be interpreted as robustness.
+Model risk is dominated by sparse evidence and absent performance validation, not measured return instability. Current monitored pipelines are healthy, but freshness does not create missing historical, ownership, rights, or execution evidence. Absence of observed strategy failure must not be interpreted as robustness. Historical Phase 19 findings remain preserved in `docs/final_audit.md`; their current dispositions are recorded below.
 
 | Risk | Severity | Current evidence | Control | Residual risk |
 |---|---|---|---|---|
-| Issuer collision / report misassignment | CRITICAL | Name-derived issuer ID and ticker-only report lookup reproduced | Security IDs use ISIN; some entity checks exist | Unacceptable until canonical issuer mapping is repaired and re-audited |
-| Normalized financial reinterpretation | HIGH | Reparse deletes/replaces normalized observations | Raw documents and hashes retained | Historical normalized version cannot always be reconstructed |
-| Source format drift | HIGH | Generic check exists but no production integration | Required-label parsers often raise | Silent semantic shifts remain possible |
-| Degraded upstream propagation | HIGH | DEGRADED is neither blocked nor shown in security warnings | FAILED/STALE propagation works | Partial failures may look more current than warranted |
-| Prospective financial lineage | HIGH | Snapshot freezes documents/factors/signals, not all normalized values | Snapshot/state tables immutable | Exact financial input version not self-contained |
+| Issuer collision / report misassignment | RESOLVED correctness finding | Canonical identity forensic retest passed; ambiguous reports quarantined | Opaque issuer IDs, effective-dated identifier evidence, ticker+ISIN corroboration | Historical ambiguous documents remain quarantined |
+| Normalized financial reinterpretation | RESOLVED correctness finding | 342 immutable versions; mutation/deletion triggers pass | Append-only versions and analytical lineage | Historical pre-version lineage is `LEGACY_INFERRED` |
+| Source format drift | CONTROL IMPLEMENTED; operational validation pending | Production parser contracts and adversarial tests pass; zero real post-migration checks | Raw archive, semantic contract, fail-closed schema check, durable failure evidence | Needs a legitimate real source cycle |
+| Degraded upstream propagation | RESOLVED correctness finding | Scheduler/API tests cover propagation and recovery; current health is 17/17 `HEALTHY` | Shared health context and dependency propagation | A future partial-source incident still requires normal operational monitoring |
+| Prospective financial freeze | RESOLVED for new snapshots | Full-freeze reconstruction tests pass | Immutable hashed `FULL_FREEZE_V1` payload | Original snapshot remains `LEGACY_SNAPSHOT_LIMITED` |
+| Exact prospective signal lineage | RESOLVED for new snapshots | Negative test excludes unrelated issuer observations | Factor/metric/valuation traversal to exact immutable versions | No new real full-freeze production snapshot yet |
+| Breaking schema evidence rollback | RESOLVED in code | Adversarial caller-rollback test passes | Forensic evidence commits before parser abort | No real schema failure after repair yet |
 | Wrong units/currency/perimeter | HIGH inherent, currently gated | 81 unspecified units; 16 unknown perimeters | Valuation returns insufficient; TTM/FX checks | Prevents valuation rather than producing an observed wrong value |
 | Preferred rights/value allocation | HIGH inherent, currently gated | Preferred rights low/missing | Rights-specific gates and valuation insufficiency | No preferred valuation can be relied upon |
 | Share-count conflict | HIGH latent | No current same-date conflict | Verified/effective-date filter | No authority/tie-break rule for a future verified conflict |
@@ -21,7 +23,8 @@ Model risk is dominated by entity integrity and missing evidence, not by measure
 | Event classification | MEDIUM | Current events deterministic and sourced | Evidence/method/confidence retained | Sparse coverage; no LLM error sample |
 | Portfolio concentration/correlation | MEDIUM latent | No real positions | Transparent caps and conservative missing-correlation handling | Real interaction untested |
 | Confidence miscalibration | HIGH untestable | Zero prospective outcomes | Separate confidence and sample-size fields | Cannot be calibrated yet |
+| Production operations | MEDIUM for local research; HIGH for hosted service | No auth, backup drill, supervision, or alert delivery | Local binding and read-only API | Not suitable for dependable multi-user deployment |
 
 ## Model-risk interpretation
 
-The model is not shown to be bad or good. It is unvalidated. Critical data integrity must be repaired before model performance evidence would be meaningful. After that, prospective accumulation—not parameter tuning against the current tiny sample—should be the primary validation path.
+The model is neither shown to be good nor bad. It is unvalidated. The next material reduction in model risk requires legitimate current-source recovery, valuation-ready evidence, historical point-in-time coverage where available, and prospective accumulation—not parameter tuning against the current sample.

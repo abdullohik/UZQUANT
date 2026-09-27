@@ -1,5 +1,7 @@
 # UZQUANT Maturity Status Matrix
 
+> Historical pre-correction matrix. The current limited-cohort assessment is recorded in `docs/readiness.md` and `outputs/research_ready_post_correction.md`.
+
 | Dimension | Status | Basis | What would be required next |
 |---|---|---|---|
 | BUILD_STATUS | BUILD_COMPLETE_BUT_EVIDENCE_LIMITED | Core research, valuation, controls, operations, audit lineage, and prospective capture work; tests and FK checks pass | Maintain rather than broaden indiscriminately |

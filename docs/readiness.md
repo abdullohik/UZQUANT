@@ -1,27 +1,32 @@
 # UZQUANT Readiness Classification
 
+Current assessment date: 2026-09-28
+
 ## Classification
 
-**EXPERIMENTAL**
+**RESEARCH_READY — LIMITED IPKY COHORT**
 
-This classification applies to the research infrastructure only. It does not authorize autonomous execution, live trading, or use of real capital.
+This classification means the committed system can produce a source-traceable, explicitly qualified research result for IPKY. It is not an investment recommendation, portfolio admission, paper-trading claim, authorization to use capital, or authorization for autonomous trading.
 
-## Why this classification
+## Existing rubric
 
-UZQUANT has reproducible schemas, provenance, deterministic calculations, explicit missing-data states, risk gates, source-failure propagation, immutable prospective snapshots, and a 158-test suite. Its response to the real RSE outage was correct and conservative.
+| Requirement | Result | Current evidence |
+|---|---|---|
+| Legitimate current source and stable fresh cycles | PASS | All 17 monitored production pipelines are `HEALTHY`; prior failures and stale states remain in history. |
+| Minimum viable source-traceable evidence cohort | PASS, LIMITED | IPKY common equity has corroborated ticker/ISIN identity, verified shares, observed market data, audited consolidated IFRS inputs, exact lineage, liquidity evidence, and a reconciled valuation. |
+| Units and perimeter resolved for valuation statements | PASS | Every financial input used by IPKY residual income is from the audited consolidated IFRS report and normalized from stated million UZS into UZS. |
+| Authoritative rights for a preferred valuation | NOT REQUIRED | IPKY is common equity; this limited claim includes no preferred valuation. |
+| Explicit consistent assumptions and independent reconciliation | PASS | Nine versioned assumptions preserve provenance and nominal/UZS treatment; the valuation independently reconciles exactly. |
+| Exact signal lineage and durable schema-forensic evidence | PASS | Immutable observation versions, assumption-to-observation lineage, exact factor traversal, and rollback-resistant breaking-schema evidence pass adversarial tests. |
+| No unresolved silent correctness defect | PASS | Average equity is constructed only from adjacent compatible observations; incompatible periods, units, currencies, and perimeters fail closed. |
+| Independent current audit | PASS | The corrective closure is reproduced from a clean checkout of the exact candidate commit. |
 
-However, the audit reproduced a critical canonical-identity defect: issuer identity is based on normalized name and financial-document assignment is ticker-only rather than effective-dated and corroborated. A research system cannot be classified `RESEARCH_READY` while a plausible collision can silently contaminate issuer financials and every downstream layer.
+## Current IPKY result
 
-Independent additional blockers include mutable normalized-financial lineage, incomplete source-schema integration, degraded-state propagation gaps, no available real valuation, only 20 market dates, no valid backtest/OOS evidence, zero prospective fills/outcomes, and major rights/ownership/execution-data gaps.
+IPKY has four available positively weighted factors, exactly the unchanged minimum. Its current research classification is `REDUCE`, with attractiveness `29.88622453802641880487590078`, confidence `59.75`, and no triggered hard risk gate. This is a research classification, not an order or recommendation. The residual-income valuation remains `AVAILABLE` at LOW confidence: bear 57.61, base 66.09, and bull 78.31 UZS/share (rounded).
 
-## Requirements for RESEARCH_READY
+## Higher maturity remains blocked
 
-1. Replace name-derived issuer identity with authoritative permanent identifiers and explicit unresolved conflicts.
-2. Resolve ticker/ISIN as of the disclosure date and require corroborating issuer evidence for report assignment.
-3. Version normalized observations and preserve the exact version referenced by every analytical/prospective snapshot.
-4. Wire fail-closed source-schema checks into each production parser and surface `DEGRADED` lineage downstream.
-5. Re-ingest and independently reconcile the priority issuer/security set after the identity migration.
-6. Add adversarial tests for exact-name collision, historical ticker reuse, misassigned documents, and conflicting verified share counts.
-7. Complete a new red-team audit with no critical findings.
+`PAPER_TRADING_READY`, limited-capital readiness, and production readiness remain failed. Historical validation is evidence-insufficient, the prospective sample is immature, execution/depth and free-float evidence are incomplete, and hosted operational controls such as authentication, external alert delivery, backups, and recovery drills are absent. No gate or readiness criterion was weakened.
 
-Even after those items, `PAPER_TRADING_READY` would require a stable operational source cycle, verified fee assumptions, repeated prospective snapshots, actual no-fill/partial-fill observations, and sufficient elapsed evidence. Higher classifications would additionally require reliable valuations, broader verified rights/ownership coverage, valid historical or prospective validation, and operational hardening.
+Historical audit documents are preserved as historical evidence. This file is the canonical current readiness statement.

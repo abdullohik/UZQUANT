@@ -8,6 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from .backtesting import CostModel, TradeBar, simulate_order
+from .financial_lineage import link_signal_exact_versions
 from .portfolio import CONFIGS
 from .repository import Repository, utc_now
 
@@ -142,11 +143,7 @@ def capture_prospective_state(database:Path,decision_timestamp:datetime|None=Non
         digest=hashlib.sha256(json.dumps(payload,sort_keys=True,default=str,separators=(",",":")).encode()).hexdigest()
         c.execute("INSERT INTO prospective_snapshot_evidence VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(str(uuid.uuid4()),snapshot_id,"FULL_FREEZE_V1",*[json.dumps(payload[k],sort_keys=True,default=str) for k in payload],digest,created))
         for signal_id in signals:
-            signal_row=c.execute("SELECT security_id FROM research_signals WHERE signal_id=?",(signal_id,)).fetchone()
-            if not signal_row: continue
-            issuer=c.execute("SELECT issuer_id FROM securities WHERE security_id=?",(signal_row[0],)).fetchone()[0]
-            for version in c.execute("SELECT version_id FROM financial_observation_versions WHERE issuer_id=? AND knowledge_date<=?",(issuer,stamp)):
-                c.execute("INSERT OR IGNORE INTO signal_observation_lineage VALUES(?,?,?,?)",(signal_id,version[0],"EXACT",created))
+            link_signal_exact_versions(repo,signal_id,created)
         captured=0
         for sid in universe:
             signal=c.execute("SELECT * FROM research_signals WHERE security_id=? AND generated_at<=? ORDER BY generated_at DESC,signal_id DESC LIMIT 1",(sid,stamp)).fetchone()

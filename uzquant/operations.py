@@ -93,6 +93,9 @@ def enforce_source_schema(repo:Repository,pipeline:str,source_id:str,parser_vers
         record_anomaly(repo,"SOURCE_SCHEMA_CHANGED","CRITICAL","PIPELINE",pipeline,result,(raw_document_id,) if raw_document_id else (),f"schema:{pipeline}:{raw_document_id}:{','.join(result['missing'])}")
         record_alert(repo,"SOURCE_SCHEMA_CHANGE","CRITICAL","PIPELINE",pipeline,"Breaking source schema change",f"Missing required fields: {', '.join(result['missing'])}",result,(raw_document_id,) if raw_document_id else (),f"schema-alert:{pipeline}:{raw_document_id}:{','.join(result['missing'])}")
         repo.connection.execute("UPDATE pipeline_health SET status='FAILED',latest_error='SOURCE_SCHEMA_CHANGED',retry_state='SCHEMA_BLOCKED',updated_at=? WHERE pipeline=?",(now,pipeline))
+        # Forensic source evidence must survive the caller's rollback of partial
+        # domain writes.  Ingestion boundaries call this before producing records.
+        repo.connection.commit()
         raise SourceSchemaChanged(f"SOURCE_SCHEMA_CHANGED:{pipeline}:{','.join(result['missing'])}")
     return result
 

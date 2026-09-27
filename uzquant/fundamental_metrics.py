@@ -119,11 +119,41 @@ def _flag(result:Result,threshold:Decimal,direction:str):
     if result.value is None: return ("UNAVAILABLE",{"reason":result.reason,"threshold":str(threshold)})
     triggered=result.value>threshold if direction=="gt" else result.value<threshold
     return ("TRIGGERED" if triggered else "NOT_TRIGGERED",{"value":str(result.value),"threshold":str(threshold),"test":direction})
+def _compatible_average(opening,closing):
+    """Average compatible point-in-time observations without filling gaps."""
+    if opening is None or closing is None: return None
+    metadata=lambda row:(row[3],row[4],row[5],row[6],row[7])
+    if metadata(opening)!=metadata(closing): return None
+    if None in metadata(opening) or "UNKNOWN" in metadata(opening): return None
+    opening_end=date.fromisoformat(opening[2]); closing_end=date.fromisoformat(closing[2])
+    if closing_end.year-opening_end.year!=1 or (closing_end.month,closing_end.day)!=(opening_end.month,opening_end.day): return None
+    return (Decimal(opening[1])+Decimal(closing[1]))/Decimal(2)
+
+
 def _inputs(repo,document_id):
-    rows=repo.connection.execute("SELECT canonical_concept,normalized_value,version_id FROM financial_observation_versions WHERE document_id=? AND superseded_by_version_id IS NULL ORDER BY version_id",(document_id,)).fetchall(); grouped={}
+    rows=repo.connection.execute(
+        "SELECT canonical_concept,normalized_value,period_end,currency,unit,reporting_perimeter,accounting_standard,audit_status,version_id "
+        "FROM financial_observation_versions WHERE document_id=? AND superseded_by_version_id IS NULL "
+        "ORDER BY period_end,version_id",(document_id,)).fetchall()
+    grouped={}
     for r in rows: grouped.setdefault(r[0],[]).append(r)
-    values={k:(Decimal(items[0][1]) if len(items)==1 else None) for k,items in grouped.items()}
-    ids={k:tuple(i[2] for i in items) for k,items in grouped.items() if len(items)==1}
+    document_end=repo.connection.execute("SELECT period_end FROM financial_documents WHERE document_id=?",(document_id,)).fetchone()[0]
+    current={}
+    for concept,items in grouped.items():
+        candidates=[row for row in items if row[2]==document_end]
+        current[concept]=candidates[0] if len(candidates)==1 else None
+    values={concept:(Decimal(row[1]) if row is not None else None) for concept,row in current.items()}
+    ids={concept:(row[8],) for concept,row in current.items() if row is not None}
+    for concept,derived_name in (("Equity","Average Equity"),):
+        closing=current.get(concept)
+        prior_rows=[row for row in grouped.get(concept,()) if closing is not None and row[2]<closing[2]]
+        latest_prior=max((row[2] for row in prior_rows),default=None)
+        prior_candidates=[row for row in prior_rows if row[2]==latest_prior]
+        opening=prior_candidates[0] if len(prior_candidates)==1 else None
+        average=_compatible_average(opening,closing)
+        if average is not None:
+            values[derived_name]=average
+            ids[derived_name]=(opening[8],closing[8])
     return values,ids
 def _generic_unavailable(names,reason): return {n:Result(None,reason) for n in names}
 def calculate_document(repo:Repository,document_id:str):
