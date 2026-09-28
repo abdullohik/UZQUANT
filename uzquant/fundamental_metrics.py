@@ -5,7 +5,7 @@ from datetime import date,timedelta
 from decimal import Decimal
 from .repository import Repository,stable_id,utc_now
 
-FORMULA_VERSION="fundamental-metrics/1.0.0"
+FORMULA_VERSION="fundamental-metrics/1.1.0"
 GENERAL_METRICS=("Revenue Growth","Gross Margin","EBITDA Growth","EBITDA Margin","EBIT Growth","EBIT Margin","Net Income Growth","Net Margin","ROA","ROE","ROIC","Asset Turnover","Current Ratio","Quick Ratio","Debt/Equity","Net Debt","Net Debt/EBITDA","Interest Coverage","Operating Cash Flow Margin","Free Cash Flow","FCF Margin","CapEx/Sales","Dividend Payout Ratio")
 BANK_METRICS=("Assets","Loans","Deposits","Equity","Net Interest Income","NIM","ROA","ROE","Loan Growth","Deposit Growth","NPL","Provisioning","Capital Adequacy","Cost/Income")
 INSURANCE_METRICS=("Premium Growth","Claims","Loss Ratio","Expense Ratio","Combined Ratio","Investment Income","Reserves","ROE","Solvency")
@@ -144,7 +144,10 @@ def _inputs(repo,document_id):
         current[concept]=candidates[0] if len(candidates)==1 else None
     values={concept:(Decimal(row[1]) if row is not None else None) for concept,row in current.items()}
     ids={concept:(row[8],) for concept,row in current.items() if row is not None}
-    for concept,derived_name in (("Equity","Average Equity"),):
+    # Period averages must be based on two explicitly reported, metadata-
+    # compatible balance-sheet observations.  Do not substitute the closing
+    # balance when the opening observation is absent.
+    for concept,derived_name in (("Equity","Average Equity"),("Total Assets","Average Assets")):
         closing=current.get(concept)
         prior_rows=[row for row in grouped.get(concept,()) if closing is not None and row[2]<closing[2]]
         latest_prior=max((row[2] for row in prior_rows),default=None)
@@ -155,18 +158,68 @@ def _inputs(repo,document_id):
             values[derived_name]=average
             ids[derived_name]=(opening[8],closing[8])
     return values,ids
+
+def _compatible_prior_inputs(repo,doc,current_ids):
+    """Return the latest genuinely comparable earlier document inputs.
+
+    Growth is deliberately unavailable when any reporting dimension is
+    unknown or differs.  Publication order is also enforced so a later-filed
+    historical report cannot leak into an earlier decision point.
+    """
+    dimensions=(doc["currency"],doc["reporting_perimeter"],doc["accounting_standard"],doc["audit_status"])
+    if None in dimensions or "UNKNOWN" in dimensions:
+        return {},{}
+    candidates=repo.connection.execute(
+        "SELECT d.* FROM financial_documents d "
+        "JOIN financial_document_identity_assignments a USING(document_id) "
+        "JOIN financial_document_entity_checks c USING(document_id) "
+        "WHERE d.issuer_id=? AND d.period_end<? AND d.publication_date<=? "
+        "AND d.currency=? AND d.reporting_perimeter=? "
+        "AND d.accounting_standard=? AND d.audit_status=? "
+        "AND a.assignment_status='VERIFIED' AND c.validation_status='MATCHED' "
+        "ORDER BY d.period_end DESC,d.publication_date DESC,d.document_id",
+        (doc["issuer_id"],doc["period_end"],doc["publication_date"],*dimensions),
+    ).fetchall()
+    for prior_doc in candidates:
+        current_start=date.fromisoformat(doc["period_start"])
+        current_end=date.fromisoformat(doc["period_end"])
+        prior_start=date.fromisoformat(prior_doc["period_start"])
+        prior_end=date.fromisoformat(prior_doc["period_end"])
+        if current_start.year-prior_start.year!=1 or current_end.year-prior_end.year!=1:
+            continue
+        if (current_start.month,current_start.day,current_end.month,current_end.day)!=(prior_start.month,prior_start.day,prior_end.month,prior_end.day):
+            continue
+        prior_values,prior_ids=_inputs(repo,prior_doc["document_id"])
+        compatible_values={}; compatible_ids={}
+        for concept,value in prior_values.items():
+            if concept not in current_ids or concept not in prior_ids:
+                continue
+            def metadata(version_id):
+                return tuple(repo.connection.execute(
+                    "SELECT currency,unit,reporting_perimeter,accounting_standard,audit_status "
+                    "FROM financial_observation_versions WHERE version_id=?",(version_id,)
+                ).fetchone())
+            current_metadata={metadata(version_id) for version_id in current_ids[concept]}
+            prior_metadata={metadata(version_id) for version_id in prior_ids[concept]}
+            if len(current_metadata)==1 and current_metadata==prior_metadata and None not in next(iter(current_metadata)) and "UNKNOWN" not in next(iter(current_metadata)):
+                compatible_values[concept]=value; compatible_ids[concept]=prior_ids[concept]
+        return compatible_values,compatible_ids
+    return {},{}
 def _generic_unavailable(names,reason): return {n:Result(None,reason) for n in names}
 def calculate_document(repo:Repository,document_id:str):
     doc=repo.connection.execute("SELECT d.*,i.sector FROM financial_documents d JOIN issuers i USING(issuer_id) JOIN financial_document_identity_assignments a USING(document_id) WHERE document_id=? AND a.assignment_status='VERIFIED'",(document_id,)).fetchone()
     if not doc: raise ValueError("unknown document")
     engine=route_sector(doc["source_url"],doc["sector"]); values,ids=_inputs(repo,document_id)
-    if engine=="GENERAL": results=compute_general(values)
-    elif engine=="BANK": results=compute_bank(values)
-    elif engine=="INSURANCE": results=compute_insurance(values)
-    else: results=compute_mining(values)
-    quality,flags=compute_quality(values)
+    prior,prior_ids=_compatible_prior_inputs(repo,doc,ids)
+    if engine=="GENERAL": results=compute_general(values,prior)
+    elif engine=="BANK": results=compute_bank(values,prior)
+    elif engine=="INSURANCE": results=compute_insurance(values,prior)
+    else: results=compute_mining(values,prior)
+    quality,flags=compute_quality(values,prior)
+    # Growth inputs refer to both periods; retain both sides of the lineage.
+    combined_ids={key:tuple(dict.fromkeys((*ids.get(key,()),*prior_ids.get(key,())))) for key in set(ids)|set(prior_ids)}
     for name,result in {**results,**quality}.items():
-        obs=[oid for concept in result.inputs for oid in ids.get(concept,())]
+        obs=[oid for concept in result.inputs for oid in combined_ids.get(concept,())]
         mid=stable_id("metric",f"{document_id}:{name}:CURRENT:{FORMULA_VERSION}")
         ratio=name not in {"Net Debt","Free Cash Flow","Assets","Loans","Deposits","Equity","Net Interest Income","Claims","Investment Income","Reserves","Production","Unit Costs"}
         repo.connection.execute("INSERT INTO fundamental_metrics VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(document_id,metric_name,comparison_horizon,formula_version) DO UPDATE SET metric_value=excluded.metric_value,metric_currency=excluded.metric_currency,metric_unit=excluded.metric_unit,status=excluded.status,unavailable_reason=excluded.unavailable_reason,source_observation_ids_json=excluded.source_observation_ids_json,created_at=excluded.created_at",(mid,doc["issuer_id"],document_id,name,engine,doc["period_start"],doc["period_end"],"CURRENT",str(result.value) if result.value is not None else None,None if ratio else doc["currency"],"RATIO" if ratio else "SOURCE_UNIT_UNSPECIFIED",result.status,result.reason,FORMULA_VERSION,json.dumps(obs),json.dumps([document_id]),utc_now()))

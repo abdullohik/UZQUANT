@@ -33,6 +33,10 @@ class MetricFormulaTests(unittest.TestCase):
   self.assertIsNone(_compatible_average(opening,currency_mismatch))
   self.assertIsNone(_compatible_average(opening,perimeter_mismatch))
   self.assertIsNone(_compatible_average(opening,period_mismatch))
+ def test_roa_and_asset_turnover_use_average_assets(self):
+  r=compute_general({"Revenue":D("120"),"Net Income":D("12"),"Average Assets":D("100")})
+  self.assertEqual(r["ROA"].value,D("0.12"))
+  self.assertEqual(r["Asset Turnover"].value,D("1.2"))
  def test_ttm_compatible_nonoverlapping(self):
   ranges=((date(2025,1,1),date(2025,3,31)),(date(2025,4,1),date(2025,6,30)),(date(2025,7,1),date(2025,9,30)),(date(2025,10,1),date(2025,12,31)))
   periods=[PeriodValue(a,b,D(10),"UZS","ONES","STANDALONE","IFRS") for a,b in ranges]
