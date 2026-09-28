@@ -367,21 +367,36 @@ def _method_blockers(repo: Repository, ticker: str, method: str, base_reasons: l
             blockers.append("MISSING_VERIFIED_SECURITY_CLASS_DIVIDEND_HISTORY")
     if method == "MINING_SCENARIO_DCF":
         blockers.extend(("MISSING_VERIFIED_PRODUCTION", "MISSING_COMMODITY_PRICE_SCENARIOS", "MISSING_UNIT_COST", "MISSING_MINING_CAPEX_FORECAST", "MISSING_FX_SCENARIOS"))
-    if ticker in {"AGMKP", "KASUP"}:
-        blockers.append("PREFERRED_SECURITY_RIGHTS_UNVERIFIED")
+    security = repo.connection.execute(
+        "SELECT security_class_code FROM securities WHERE security_id=?",
+        (assembled.get("security_id"),),
+    ).fetchone()
+    if security and security[0] == "PREFERRED":
+        rights = repo.connection.execute(
+            "SELECT rights_confidence,dividend_rights FROM security_rights "
+            "WHERE security_id=? AND disclosure_date<=? ORDER BY disclosure_date DESC LIMIT 1",
+            (assembled.get("security_id"), as_of.isoformat()),
+        ).fetchone()
+        if not rights or rights[0] != "HIGH" or not rights[1]:
+            blockers.append("PREFERRED_SECURITY_RIGHTS_UNVERIFIED")
     return sorted(set(blockers))
 
 
-def run_real_validation(database: Path, valuation_date: date | None = None):
+def run_real_validation(database: Path, valuation_date: date | None = None,
+                        tickers: tuple[str, ...] | None = None):
     from .remediation_b import record_model_attempt
     valuation_date = valuation_date or date.today()
-    tickers = ("AGMKP", "KASUP", "IPKY", "UZTL", "QZSM")
+    tickers = tickers or ("AGMKP", "KASUP", "IPKY", "UZTL", "QZSM")
     with Repository(database) as repo:
         repo.initialize()
-        rows = repo.connection.execute("SELECT h.identifier_value,s.security_id,s.issuer_id,i.sector,coalesce((SELECT source_url FROM financial_documents WHERE issuer_id=i.issuer_id ORDER BY publication_date DESC LIMIT 1),'') source_url FROM identifier_history h JOIN securities s ON s.security_id=h.security_id JOIN issuers i ON i.issuer_id=s.issuer_id WHERE h.identifier_type='TICKER' AND h.identifier_value IN (?,?,?,?,?) GROUP BY h.identifier_value,s.security_id", tickers).fetchall()
+        marks = ",".join("?" for _ in tickers)
+        rows = repo.connection.execute(f"SELECT h.identifier_value,s.security_id,s.issuer_id,i.sector,coalesce((SELECT source_url FROM financial_documents WHERE issuer_id=i.issuer_id ORDER BY publication_date DESC LIMIT 1),'') source_url FROM identifier_history h JOIN securities s ON s.security_id=h.security_id JOIN issuers i ON i.issuer_id=s.issuer_id WHERE h.identifier_type='TICKER' AND h.identifier_value IN ({marks}) GROUP BY h.identifier_value,s.security_id", tickers).fetchall()
         results = []
         for row in rows:
-            source_sector = {"IPKY":"BANK","KASUP":"INSURANCE","AGMKP":"MINING"}.get(row[0],row[3] or "GENERAL")
+            source_sector = ("BANK" if "/bank/" in row[4] else
+                             "INSURANCE" if "/insurance/" in row[4] else
+                             "MINING" if row[0] in {"AGMK", "AGMKP"} else
+                             row[3] or "GENERAL")
             engine, methods = route_valuation(source_sector)
             method = methods[0]
             reasons, docs, observations, assembled = _real_reasons(repo, row[1], engine, valuation_date)
@@ -398,7 +413,7 @@ def run_real_validation(database: Path, valuation_date: date | None = None):
                     method_missing=[r for r in method_missing if r!="MISSING_VERIFIED_PEER_MULTIPLE"]
                     concept="Net Income" if candidate=="P/E" else "Equity"
                     metric=assembled["latest_concepts"].get(concept)
-                    result=execute_multiple_method(candidate,D(metric["value"]) if metric else None,D(assembled["class_shares_outstanding"]) if assembled["class_shares_outstanding"] else None,scenario_inputs,metric["currency"] if metric else "UZS",row[0] not in {"AGMKP","KASUP"}) if not method_missing else ValuationResult(INSUFFICIENT,candidate,None,reasons=tuple(sorted(set(method_missing))))
+                    result=execute_multiple_method(candidate,D(metric["value"]) if metric else None,D(assembled["class_shares_outstanding"]) if assembled["class_shares_outstanding"] else None,scenario_inputs,metric["currency"] if metric else "UZS","PREFERRED_SECURITY_RIGHTS_UNVERIFIED" not in method_missing) if not method_missing else ValuationResult(INSUFFICIENT,candidate,None,reasons=tuple(sorted(set(method_missing))))
                 elif candidate=="RESIDUAL_INCOME":
                     required={(name,scenario) for name in ("ROE","COST_OF_EQUITY","GROWTH") for scenario in ("BEAR","BASE","BULL")}
                     if required<=set(assumption_map):
