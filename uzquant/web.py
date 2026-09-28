@@ -20,6 +20,7 @@ class ResearchApplication:
                 name=path.rsplit("/",1)[-1]; mime="text/css" if name.endswith(".css") else "text/javascript; charset=utf-8"
                 return self._asset(start_response,name,mime)
             if path=="/api/v1/health": return self._json(start_response,200,{"status":"OK","service":"UZQUANT Research API"})
+            if path=="/api/v1/overview": return self._json(start_response,200,self.service.overview())
             if path=="/api/v1/universe": return self._json(start_response,200,self.service.universe({k:v[0] for k,v in parse_qs(environ.get("QUERY_STRING","")).items()}))
             if path=="/api/v1/macro": return self._json(start_response,200,self.service.macro())
             if path=="/api/v1/portfolios": return self._json(start_response,200,self.service.portfolios())
@@ -30,6 +31,7 @@ class ResearchApplication:
             if path=="/api/v1/paper-trading": return self._json(start_response,200,self.service.paper_trading())
             parts=[p for p in path.split("/") if p]
             if len(parts)>=4 and parts[:3]==["api","v1","securities"]:
+                if len(parts)>4 and parts[4]=="lineage": return self._json(start_response,200,self.service.lineage(parts[3]))
                 detail=self.service.security(parts[3]); section=parts[4] if len(parts)>4 else None
                 sections={"market":"market_observations","financials":"financial_documents","valuation":"valuation","liquidity":"liquidity","corporate":"corporate_actions","signals":"signal_history","report":"report"}
                 return self._json(start_response,200,detail if not section else {"api_version":detail["api_version"],"ticker":parts[3],section:detail.get(sections.get(section,section))})

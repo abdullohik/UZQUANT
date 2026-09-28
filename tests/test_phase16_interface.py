@@ -6,6 +6,7 @@ from uzquant.web import ResearchApplication
 
 
 class FakeService:
+    def overview(self): return {"status":"OK","security_count":1,"coverage_counts":{"RESEARCH_READY":1},"pipelines":[]}
     def universe(self,filters=None): return {"status":"OK","count":1,"securities":[{"ticker":"TEST","market":{"price":"12.5"},"signal":"DATA_INSUFFICIENT"}]}
     def security(self,ticker): return {"api_version":"test","identity":{"ticker":ticker,"security_id":"s1"},"valuation_status":"VALUATION_INSUFFICIENT","signal":{"signal_state":"DATA_INSUFFICIENT","confidence":"22"},"warnings":["DATA_INSUFFICIENT"],"report":{"status":"GROUNDED"}}
     def issuer(self,issuer_id): return {"issuer":{"issuer_id":issuer_id}}
@@ -16,6 +17,7 @@ class FakeService:
     def pipelines(self): return {"pipelines":[]}
     def operations(self): return {"status":"OK","health":[],"runs":[],"anomalies":[],"alerts":[],"signal_transitions":[]}
     def paper_trading(self): return {"status":"OK","portfolios":[],"snapshots":[],"security_states":[],"orders":[],"fills":[],"signal_outcomes":[],"drift":[]}
+    def lineage(self,ticker): return {"status":"OK","identity":{"ticker":ticker},"lineage_standard":"EXACT_SIGNAL_DEPENDENCY_TRAVERSAL","exact_version_count":5}
 
 
 def request(app,path):
@@ -72,3 +74,23 @@ def test_phase18_paper_trading_endpoint_is_read_only_and_available():
     status,payload=request(ResearchApplication(FakeService()),"/api/v1/paper-trading")
     assert status["status"].startswith("200")
     assert payload["status"]=="OK" and payload["fills"]==[]
+
+
+def test_terminal_overview_and_exact_lineage_routes():
+    app=ResearchApplication(FakeService())
+    status,overview=request(app,"/api/v1/overview")
+    assert status["status"].startswith("200") and overview["coverage_counts"]["RESEARCH_READY"]==1
+    status,lineage=request(app,"/api/v1/securities/IPKY/lineage")
+    assert status["status"].startswith("200")
+    assert lineage["lineage_standard"]=="EXACT_SIGNAL_DEPENDENCY_TRAVERSAL"
+    assert lineage["exact_version_count"]==5
+
+
+def test_terminal_has_required_screens_and_no_production_edit_controls():
+    html=Path("uzquant/static/index.html").read_text()
+    js=Path("uzquant/static/app.js").read_text()
+    for screen in ("Market overview","Market screener","Security research","Valuation lab","Evidence lineage","System health"):
+        assert screen in html
+    assert "method:'POST'" not in js and 'method:"POST"' not in js
+    assert "/api/v1/overview" in js and "/api/v1/securities/" in js
+    assert "residual_income(" not in js and "factor_weights" not in js

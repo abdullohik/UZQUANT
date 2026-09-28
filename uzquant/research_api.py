@@ -5,7 +5,11 @@ from pathlib import Path
 
 from .repository import Repository
 
-API_VERSION = "research-api/1.0.0"
+API_VERSION = "research-api/1.1.0"
+
+FACTOR_NAMES = ("Valuation", "Quality", "Growth", "Momentum", "Dividend",
+                "Governance", "Catalyst", "Balance-Sheet Risk", "Liquidity",
+                "Data Quality")
 
 
 def _decode(row):
@@ -94,15 +98,101 @@ class ResearchService:
                 market=_row(repo.connection,"SELECT trade_date,coalesce(last,close,individual_trade_price) price,currency,observation_status,source_id,document_id,last_seen_at FROM market_observations WHERE security_id=? AND series_type='RAW_OBSERVED' ORDER BY trade_date DESC LIMIT 1",(sid,))
                 signal=_row(repo.connection,"SELECT * FROM research_signals WHERE security_id=? ORDER BY generated_at DESC LIMIT 1",(sid,))
                 liquidity=_row(repo.connection,"SELECT liquidity_state,liquidity_confidence,as_of_date FROM liquidity_assessments WHERE security_id=? ORDER BY created_at DESC LIMIT 1",(sid,))
-                valuation=_row(repo.connection,"SELECT status,valuation_date FROM valuation_records WHERE security_id=? ORDER BY (status='AVAILABLE') DESC,created_at DESC LIMIT 1",(sid,))
+                valuation=_row(repo.connection,"SELECT valuation_id,status,valuation_date,bear_value,base_value,bull_value,confidence,method,currency FROM valuation_records WHERE security_id=? ORDER BY (status='AVAILABLE') DESC,created_at DESC LIMIT 1",(sid,))
                 factors=(signal or {}).get("factor_scores_json",{})
-                result.append({**item,"market":market,"valuation_status":valuation["status"] if valuation else "VALUATION_INSUFFICIENT",
+                available_factors=[name for name,value in factors.items() if value.get("status")=="AVAILABLE" and value.get("score") is not None]
+                factor_count=len(available_factors)
+                valuation_status=valuation["status"] if valuation else "VALUATION_INSUFFICIENT"
+                signal_state=signal.get("signal_state") if signal else "DATA_INSUFFICIENT"
+                if valuation_status=="AVAILABLE" and factor_count>=4 and signal_state!="DATA_INSUFFICIENT": coverage="RESEARCH_READY"
+                elif market or factors: coverage="PARTIALLY_RESEARCHABLE"
+                else: coverage="DATA_INSUFFICIENT"
+                market_flags=[r[0] for r in repo.connection.execute("SELECT flag_type FROM market_quality_flags WHERE security_id=? AND flag_type IN('STALE_PRICE','VERY_STALE_PRICE') ORDER BY created_at DESC",(sid,)).fetchall()]
+                freshness="STALE" if market_flags else ("CURRENT_OBSERVATION" if market else "NO_MARKET_DATA")
+                blockers=[]
+                if valuation_status!="AVAILABLE": blockers.append("VALUATION_INSUFFICIENT")
+                if factor_count<4: blockers.append("INSUFFICIENT_FACTOR_COVERAGE")
+                if signal_state=="DATA_INSUFFICIENT": blockers.append("DATA_INSUFFICIENT")
+                if freshness=="STALE": blockers.append("STALE")
+                result.append({**item,"market":market,"valuation":valuation,"valuation_status":valuation_status,
                     "quality":factors.get("Quality"),"growth":factors.get("Growth"),"data_quality":factors.get("Data Quality"),
-                    "confidence":signal.get("confidence") if signal else None,"signal":signal.get("signal_state") if signal else "DATA_INSUFFICIENT",
-                    "risk_gates":signal.get("triggered_gates_json",[]) if signal else [],"liquidity":liquidity})
+                    "confidence":signal.get("confidence") if signal else None,"signal":signal_state,
+                    "risk_gates":signal.get("triggered_gates_json",[]) if signal else [],"liquidity":liquidity,
+                    "factor_count":factor_count,"available_factors":available_factors,"required_factor_count":4,
+                    "coverage_state":coverage,"coverage_blockers":sorted(set(blockers)),"freshness":freshness})
             def keep(x):
-                return (not filters.get("sector") or x.get("sector")==filters["sector"]) and (not filters.get("signal") or x["signal"]==filters["signal"]) and (not filters.get("liquidity") or (x.get("liquidity") or {}).get("liquidity_state")==filters["liquidity"])
+                return (not filters.get("sector") or x.get("sector")==filters["sector"]) and (not filters.get("signal") or x["signal"]==filters["signal"]) and (not filters.get("liquidity") or (x.get("liquidity") or {}).get("liquidity_state")==filters["liquidity"]) and (not filters.get("valuation") or x["valuation_status"]==filters["valuation"]) and (not filters.get("security_class") or x["security_class_code"]==filters["security_class"]) and (not filters.get("freshness") or x["freshness"]==filters["freshness"]) and (not filters.get("coverage") or x["coverage_state"]==filters["coverage"])
             return {"api_version":API_VERSION,"status":"OK","health_context":_health_context(repo.connection),"count":sum(keep(x) for x in result),"securities":[x for x in result if keep(x)]}
+
+    def overview(self):
+        universe=self.universe()["securities"]
+        with Repository(self.database) as repo:
+            repo.initialize(); c=repo.connection
+            def counts(items,key):
+                result={}
+                for item in items:
+                    value=item.get(key) or "UNAVAILABLE"; result[value]=result.get(value,0)+1
+                return result
+            latest_market=_rows(c,"""WITH tickers AS (
+                SELECT security_id,identifier_value,ROW_NUMBER() OVER(PARTITION BY security_id ORDER BY known_at DESC) rn
+                FROM identifier_history WHERE identifier_type='TICKER'), ranked AS (
+                SELECT m.*,ROW_NUMBER() OVER(PARTITION BY m.security_id ORDER BY m.trade_date DESC,m.last_seen_at DESC) rn
+                FROM market_observations m WHERE m.series_type='RAW_OBSERVED')
+                SELECT t.identifier_value ticker,m.security_id,m.trade_date,coalesce(m.last,m.close,m.individual_trade_price) price,
+                m.share_volume,m.turnover_value,m.currency,m.observation_status FROM ranked m JOIN tickers t USING(security_id)
+                WHERE m.rn=1 AND t.rn=1 ORDER BY m.trade_date DESC,t.identifier_value LIMIT 20""")
+            valuations=_rows(c,"""WITH tickers AS (
+                SELECT security_id,identifier_value,ROW_NUMBER() OVER(PARTITION BY security_id ORDER BY known_at DESC) rn
+                FROM identifier_history WHERE identifier_type='TICKER'), ranked AS (
+                SELECT v.*,ROW_NUMBER() OVER(PARTITION BY security_id,method ORDER BY created_at DESC) rn FROM valuation_records v)
+                SELECT t.identifier_value ticker,v.method,v.status,v.valuation_date,v.bear_value,v.base_value,v.bull_value,v.confidence,v.currency
+                FROM ranked v JOIN tickers t USING(security_id) WHERE v.rn=1 AND t.rn=1
+                ORDER BY (v.status='AVAILABLE') DESC,v.valuation_date DESC,t.identifier_value,v.method LIMIT 12""")
+            snapshots=_rows(c,"SELECT prospective_snapshot_id,decision_timestamp,trigger_type,upstream_state,created_at FROM prospective_decision_snapshots ORDER BY decision_timestamp DESC LIMIT 5")
+            backfill={row["status"]:row["count"] for row in _rows(c,"SELECT status,count(*) count FROM rse_history_acquisition_jobs GROUP BY status")}
+            alerts=_rows(c,"SELECT alert_type,severity,entity_type,entity_id,title,message,created_at FROM research_alerts WHERE status='OPEN' ORDER BY created_at DESC LIMIT 10")
+            transitions=_rows(c,"SELECT * FROM signal_state_transitions ORDER BY changed_at DESC LIMIT 10")
+            health=_rows(c,"SELECT pipeline,status,last_success_at,expected_refresh_at,latest_error,source FROM pipeline_health ORDER BY pipeline")
+            return {"api_version":API_VERSION,"status":"OK","generated_from":"CANONICAL_BACKEND_RECORDS",
+                    "health_context":_health_context(c),"pipeline_counts":counts(health,"status"),
+                    "coverage_counts":counts(universe,"coverage_state"),"signal_counts":counts(universe,"signal"),
+                    "valuation_counts":counts(universe,"valuation_status"),"liquidity_counts":counts([{"state":(x.get("liquidity") or {}).get("liquidity_state")} for x in universe],"state"),
+                    "security_count":len(universe),"latest_market":latest_market,"latest_valuations":valuations,
+                    "latest_transitions":transitions,"alerts":alerts,"snapshots":snapshots,"backfill":backfill,
+                    "pipelines":health}
+
+    def lineage(self, ticker: str):
+        with Repository(self.database) as repo:
+            repo.initialize(); c=repo.connection; identity=self._identity(c,ticker)
+            if not identity: raise KeyError(ticker)
+            sid=identity["security_id"]
+            signal=_row(c,"SELECT * FROM research_signals WHERE security_id=? ORDER BY generated_at DESC LIMIT 1",(sid,))
+            factors=_rows(c,"SELECT * FROM factor_scores WHERE security_id=? AND data_snapshot_id=? ORDER BY factor_name",(sid,signal["data_snapshot_id"] if signal else ""))
+            valuations=_rows(c,"SELECT * FROM valuation_records WHERE security_id=? ORDER BY (status='AVAILABLE') DESC,created_at DESC",(sid,))
+            version_ids=[]
+            if signal:
+                from .financial_lineage import exact_signal_version_ids
+                version_ids=list(exact_signal_version_ids(repo,signal["signal_id"]))
+            versions=[]
+            if version_ids:
+                marks=",".join("?" for _ in version_ids)
+                versions=_rows(c,f"""SELECT v.*,r.raw_label,r.raw_value source_raw_value,r.source_location raw_source_location,
+                    d.source_url,d.publication_date document_publication_date,d.retrieved_at,d.content_hash
+                    FROM financial_observation_versions v LEFT JOIN financial_raw_values r USING(raw_value_id)
+                    JOIN financial_documents d USING(document_id) WHERE v.version_id IN ({marks}) ORDER BY v.period_end,v.canonical_concept""",version_ids)
+            assumption_lineage=_rows(c,"""SELECT a.assumption_id,a.input_name,a.scenario,a.value,a.provenance_class,a.source,
+                d.nominal_real_basis,d.source_date,d.source_url,d.methodology,d.derivation_json,d.confidence assumption_confidence,d.assumption_version,
+                l.input_role,l.transformation,l.observation_version_id
+                FROM valuation_assumption_inputs a JOIN valuation_assumption_details d USING(assumption_id)
+                LEFT JOIN valuation_assumption_observation_lineage l USING(assumption_id)
+                WHERE a.security_id=? ORDER BY a.input_name,a.scenario,l.input_role""",(sid,))
+            metrics=_rows(c,"""SELECT DISTINCT m.* FROM fundamental_metrics m JOIN factor_scores f
+                ON f.security_id=? AND f.data_snapshot_id=?
+                WHERE m.metric_id IN (SELECT value FROM json_each(f.source_record_ids_json)) ORDER BY m.metric_name""",(sid,signal["data_snapshot_id"] if signal else ""))
+            return {"api_version":API_VERSION,"status":"OK","identity":identity,"signal":signal,"factors":factors,
+                    "fundamental_metrics":metrics,"valuations":valuations,"assumption_lineage":assumption_lineage,
+                    "normalized_versions":versions,"exact_version_count":len(versions),
+                    "lineage_standard":"EXACT_SIGNAL_DEPENDENCY_TRAVERSAL"}
 
     def security(self, ticker: str):
         with Repository(self.database) as repo:

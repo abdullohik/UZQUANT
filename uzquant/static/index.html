@@ -1,3 +1,38 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>UZQUANT Research</title><link rel="stylesheet" href="/assets/styles.css"></head>
-<body><header><div><strong>UZQUANT</strong><span>Institutional research workspace</span></div><nav><button data-view="universe">Universe</button><button data-view="security">Security</button><button data-view="portfolios">Portfolios</button><button data-view="paper">Paper Trading</button><button data-view="validation">Backtest & Validation</button><button data-view="pipelines">Pipelines</button></nav></header>
-<main><section id="notice">Backend records are authoritative. Missing evidence is never displayed as zero. Critical states remain explicit: DATA_INSUFFICIENT · VALUATION_INSUFFICIENT · LIQUIDITY_TRAP · STALE_DATA · LOW_CONFIDENCE · RIGHTS_UNVERIFIED.</section><section id="content" aria-live="polite">Loading…</section></main><script src="/assets/app.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>UZQUANT Terminal Alpha</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark">UZ</span><div><strong>UZQUANT</strong><small>TERMINAL ALPHA</small></div></div>
+    <nav aria-label="Primary navigation">
+      <button class="nav-item active" data-view="overview"><span>01</span>Market overview</button>
+      <button class="nav-item" data-view="screener"><span>02</span>Market screener</button>
+      <button class="nav-item" data-view="research"><span>03</span>Security research</button>
+      <button class="nav-item" data-view="valuation"><span>04</span>Valuation lab</button>
+      <button class="nav-item" data-view="lineage"><span>05</span>Evidence lineage</button>
+      <button class="nav-item" data-view="health"><span>06</span>System health</button>
+    </nav>
+    <div class="sidebar-foot">
+      <div id="system-dot" class="system-state"><i></i><span>Connecting</span></div>
+      <small>Deterministic backend<br>Read-only research interface</small>
+    </div>
+  </aside>
+  <div class="workspace">
+    <header class="topbar">
+      <div><span class="eyebrow">UZBEKISTAN EQUITIES</span><span id="asof">AS OF —</span></div>
+      <div class="top-actions"><button id="security-jump" class="ticker-button">IPKY ↗</button><span class="readiness">RESEARCH READY <b>LIMITED COHORT</b></span></div>
+    </header>
+    <main>
+      <div class="policy-strip"><b>Evidence policy</b> Missing evidence is never displayed as zero. Research state is not an order. Backend records are authoritative. DATA_INSUFFICIENT · VALUATION_INSUFFICIENT · LIQUIDITY_TRAP remain explicit.</div>
+      <section id="content" aria-live="polite"><div class="loading">Loading canonical research records…</div></section>
+    </main>
+  </div>
+  <script src="/assets/app.js"></script>
+</body>
+</html>
