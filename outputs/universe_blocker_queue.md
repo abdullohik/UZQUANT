@@ -1,6 +1,6 @@
 # Current Equity Universe Blocker Queue — Mission 2b
 
-Generated: 2026-09-29T08:13:17.724966+00:00. One classified top evidence blocker per current equity. No source is labeled `PUBLIC_SOURCE_EXHAUSTED`.
+Generated: 2026-09-29T13:02:47.821171+00:00. One classified top evidence blocker per current equity. No source is labeled `PUBLIC_SOURCE_EXHAUSTED`.
 
 ## Before / after
 
@@ -93,6 +93,6 @@ IPKY's `NONE` means the acquisition queue has no remaining top evidence-ingestio
 | UZTLP | 3dd2e6b9-25f8-5303-b252-b69f4f7664fa | FINANCIAL_METADATA_INCOMPLETE | METADATA_GAP | Mission 2b parser/share/engine rerun |
 | YRFS | 5bb7d563-ee9b-5663-a2f1-91cb9a4970cc | NO_VERIFIED_FINANCIAL_DOCUMENT | PUBLIC_DATA_NOT_YET_COLLECTED | Outside Mission 2b scope |
 
-## Mission 2c metadata result
+## Mission 2d perimeter result
 
-As of 2026-09-29T08:13:17.416473+00:00, strict extraction found no additional explicit required metadata in retained documents. Fully resolved documents remain 1/38; valuation methods and frozen gates are unchanged.
+As of 2026-09-29T13:02:46.696951+00:00, 0 of 36 unknown perimeters were legitimately resolved. Valuation, factor, gate and signal records remain unchanged.

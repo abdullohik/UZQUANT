@@ -31,6 +31,7 @@ from .cbu_yield_curve import ingest_cbu_yield_curve
 from .targeted_valuation_unlock import run_targeted_unlock
 from .cohort_expansion import assess_cohort_valuations, export_cohort
 from .rse_universe import ingest_and_export as reconcile_rse_universe
+from .perimeter_resolution import run as resolve_perimeters
 def main(argv=None):
     parser=argparse.ArgumentParser(prog="uzquant"); sub=parser.add_subparsers(dest="command",required=True)
     sub.add_parser("init-db"); sub.add_parser("update-security-master"); sub.add_parser("update-market-data"); sub.add_parser("update-financial-documents"); sub.add_parser("calculate-fundamentals"); sub.add_parser("update-corporate-intelligence"); sub.add_parser("update-events"); sub.add_parser("update-macro"); sub.add_parser("update-cbu-yield-curve"); sub.add_parser("targeted-valuation-unlock"); sub.add_parser("export-macro"); sub.add_parser("run-valuations"); sub.add_parser("rank-universe"); sub.add_parser("size-positions"); sub.add_parser("assess-execution"); sub.add_parser("run-backtests"); sub.add_parser("validate-model"); sub.add_parser("construct-portfolios"); sub.add_parser("remediation-a-evidence"); sub.add_parser("remediation-b-evidence"); sub.add_parser("remediation-c-attachments"); sub.add_parser("initialize-shadow-portfolios"); cohort=sub.add_parser("export-cohort-coverage"); cohort.add_argument("--size",type=int,default=20); cohort_values=sub.add_parser("run-cohort-valuations"); cohort_values.add_argument("--size",type=int,default=20); liquidity=sub.add_parser("assess-liquidity"); liquidity.add_argument("--position-shares",default="10000"); liquidity.add_argument("--participation-rate",default="0.10"); query=sub.add_parser("query-fundamentals"); query.add_argument("--ticker",required=True); web=sub.add_parser("serve-research"); web.add_argument("--host",default="127.0.0.1"); web.add_argument("--port",type=int,default=8765); ops=sub.add_parser("operations-tick"); ops.add_argument("--force",action="store_true"); ops.add_argument("--pipeline",action="append"); sub.add_parser("operations-check")
@@ -41,7 +42,7 @@ def main(argv=None):
     history_import=sub.add_parser("import-rse-inbox"); history_import.add_argument("--inbox",default="data/import/rse")
     sub.add_parser("rse-history-status")
     history_html=sub.add_parser("backfill-rse-html"); history_html.add_argument("--job-limit",type=int,default=1); history_html.add_argument("--pause-seconds",type=float,default=1.0); history_html.add_argument("--ticker",action="append")
-    sub.add_parser("reconcile-rse-universe")
+    sub.add_parser("reconcile-rse-universe"); sub.add_parser("resolve-perimeters")
     args=parser.parse_args(argv); configure_logging(); settings=Settings.from_env()
     if args.command=="init-db":
         settings.database_path.parent.mkdir(parents=True,exist_ok=True)
@@ -49,6 +50,7 @@ def main(argv=None):
         result={"status":"initialized","database":str(settings.database_path)}
     elif args.command=="update-security-master": result=ingest_security_master(settings)
     elif args.command=="reconcile-rse-universe": result={"status":"SUCCEEDED",**reconcile_rse_universe(settings)}
+    elif args.command=="resolve-perimeters": result={"status":"SUCCEEDED",**resolve_perimeters(settings)}
     elif args.command=="update-market-data": result=ingest_market_data(settings)
     elif args.command=="import-rse-trade-export": result=ingest_trade_export(settings,Path(args.file),date.fromisoformat(args.begin),date.fromisoformat(args.end),args.market,args.search_key)
     elif args.command=="plan-rse-history": result=plan_history(settings.database_path,date.fromisoformat(args.begin),date.fromisoformat(args.end),args.market)

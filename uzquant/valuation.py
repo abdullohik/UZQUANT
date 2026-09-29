@@ -7,6 +7,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+from .evidence import PROVENANCE_CLASSES
 from .repository import Repository, stable_id, utc_now
 
 MODEL_VERSION = "sector-valuation/3.2.0"
@@ -53,8 +54,7 @@ class AssumptionInput:
     source: str | None = None
 
     def validate(self):
-        allowed={"OBSERVED","AUTHORITATIVE_SOURCE","SOURCE_DERIVED","MODEL_ESTIMATED","CONFIGURABLE_RESEARCH_ASSUMPTION","UNAVAILABLE"}
-        if self.provenance_class not in allowed: raise ValueError("invalid assumption provenance")
+        if self.provenance_class not in PROVENANCE_CLASSES: raise ValueError("invalid assumption provenance")
         if self.value is not None and self.provenance_class!="UNAVAILABLE" and not self.source:
             raise ValueError("available assumption requires provenance source")
 
