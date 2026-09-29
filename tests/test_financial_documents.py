@@ -1,8 +1,8 @@
 import tempfile,unittest
 from decimal import Decimal
 from pathlib import Path
-from uzquant.financial_documents import parse_decimal,parse_statement_rows,point_in_time
-from uzquant.financial_taxonomy import map_concept
+from uzquant.financial_documents import extract_explicit_metadata,parse_decimal,parse_statement_rows,point_in_time
+from uzquant.financial_taxonomy import map_concept,map_source_concept
 from uzquant.financial_lineage import append_version
 from uzquant.repository import Repository,stable_id
 
@@ -12,6 +12,27 @@ class FinancialTests(unittest.TestCase):
   self.assertEqual(parse_decimal("1 234 567,89"),Decimal("1234567.89")); self.assertEqual(parse_decimal("(15,2)"),Decimal("-15.2")); self.assertIsNone(parse_decimal("-"))
  def test_structured_html_and_missing_not_inferred(self):
   rows=parse_statement_rows(FIXTURE); self.assertEqual(len(rows),1); self.assertEqual(rows[0].raw_value,"1 000,00")
+ def test_two_column_bank_statement_is_parsed_but_unrelated_table_is_not(self):
+  fixture=b'''<table><tr><td>Dividend</td><td>15</td></tr><tr><td>ASSETS</td></tr><tr><td>14. Total Assets</td><td>66 699</td></tr><tr><td>1. INTEREST INCOME</td></tr><tr><td>1.1 Total interest income</td><td>11 309</td></tr></table>'''
+  rows=parse_statement_rows(fixture)
+  self.assertEqual([(r.statement_type,r.label,r.raw_value) for r in rows],[
+   ("BALANCE_SHEET","14. Total Assets","66 699"),
+   ("INCOME_STATEMENT","1.1 Total interest income","11 309")])
+ def test_bank_taxonomy_uses_pre_provision_nii_only(self):
+  self.assertEqual(map_source_concept("Loans and leasing operations, net"),"Loans")
+  self.assertEqual(map_source_concept("Charter Capital"),"Share Capital")
+  self.assertEqual(map_source_concept("11. Net Profit"),"Net Income")
+  self.assertEqual(map_source_concept("Net interest income before provision for possible loan losses"),"Net Interest Income")
+  self.assertIsNone(map_source_concept("Net interest income after provision for possible loan losses"))
+  self.assertIsNone(map_source_concept("e. Other Non-Interest Income"))
+  self.assertEqual(map_source_concept("f. Total Non-Interest Income"),"Non-Interest Income")
+ def test_audit_status_requires_explicit_audit_row(self):
+  content=b'''<table><tr><th>Name of the Auditing Organization</th><th>Audit Conclusion Issue Date</th></tr><tr><td>KPMG Audit</td><td>2026-05-04</td></tr></table>'''
+  # The real form has eight cells; a shortened look-alike is intentionally
+  # insufficient so metadata cannot be promoted from appearance alone.
+  self.assertEqual(extract_explicit_metadata(content),{})
+  content=b'''<table><tr><th>Name of the Auditing Organization</th><th>License Issue Date</th><th>License</th><th>Type</th><th>Audit Conclusion Issue Date</th></tr><tr><td>KPMG Audit</td><td>2023-11-28</td><td>35</td><td>Positive</td><td>2026-05-04</td></tr></table>'''
+  self.assertEqual(extract_explicit_metadata(content)["audit_status"],"AUDITED")
  def test_multilingual_taxonomy(self):
   self.assertEqual(map_concept("Чистая прибыль"),"Net Income"); self.assertEqual(map_concept("Sotishdan sof tushum"),"Revenue"); self.assertIsNone(map_concept("Unmapped custom row"))
   self.assertEqual(map_concept("Net interest income"),"Net Interest Income")

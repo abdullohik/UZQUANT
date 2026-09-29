@@ -12,7 +12,7 @@ from .identity import RESOLVED,record_conflict,resolve_security_pair
 from .operations import enforce_source_schema
 from .rse import fetch
 
-PARSER_VERSION="openinfo-financial-html/1.1.0"
+PARSER_VERSION="openinfo-financial-html/1.2.2"
 SOURCE_ID="openinfo-disclosure"
 REPORT_ISINS={
  "AGBA":"UZ7001560000","AGMK":"UZ7000550002","BIOK":"UZ7025870005",
@@ -24,8 +24,8 @@ REPORTS=(
  # ticker, portal path, period, publication, perimeter, standard, audit, currency, unit
  ("AGMK","jsc/annual/5218","2023-01-01","2023-12-31","2024-09-25","UNKNOWN","LOCAL_STATUTORY","AUDITED","UZS","SOURCE_UNIT_UNSPECIFIED"),
  ("AGMK","jsc/quarter/18364","2026-01-01","2026-03-31","2026-05-01","UNKNOWN","LOCAL_STATUTORY","UNAUDITED","UZS","SOURCE_UNIT_UNSPECIFIED"),
- ("AGBA","bank/annual/335","2023-01-01","2023-12-31","2024-07-11","UNKNOWN","LOCAL_STATUTORY","UNKNOWN","UZS","SOURCE_UNIT_UNSPECIFIED"),
- ("HMKB","bank/annual/438","2025-01-01","2025-12-31","2026-07-09","UNKNOWN","LOCAL_STATUTORY","UNKNOWN","UZS","SOURCE_UNIT_UNSPECIFIED"),
+ ("AGBA","bank/annual/335","2023-01-01","2023-12-31","2024-07-11","UNKNOWN","UNKNOWN","UNKNOWN","UZS","SOURCE_UNIT_UNSPECIFIED"),
+ ("HMKB","bank/annual/438","2025-01-01","2025-12-31","2026-07-09","UNKNOWN","UNKNOWN","UNKNOWN","UZS","SOURCE_UNIT_UNSPECIFIED"),
  ("KASUP","insurance/annual/39","2017-01-01","2017-12-31","2018-07-13","UNKNOWN","LOCAL_STATUTORY","AUDITED","UZS","SOURCE_UNIT_UNSPECIFIED"),
  ("KASUP","insurance/annual/73","2021-01-01","2021-12-31","2022-06-13","UNKNOWN","LOCAL_STATUTORY","AUDITED","UZS","SOURCE_UNIT_UNSPECIFIED"),
  ("KASUP","insurance/annual/208","2023-01-01","2023-12-31","2024-07-08","UNKNOWN","LOCAL_STATUTORY","AUDITED","UZS","SOURCE_UNIT_UNSPECIFIED"),
@@ -59,6 +59,18 @@ class TableParser(HTMLParser):
         elif tag=="tr" and self.row is not None:
             if any(self.row): self.rows.append(self.row)
             self.row=None
+def extract_explicit_metadata(content:bytes)->dict[str,str]:
+    """Extract only metadata stated in the rendered document tables."""
+    parser=TableParser(); parser.feed(content.decode("utf-8",errors="replace")); result={}
+    for index,row in enumerate(parser.rows[:-1]):
+        labels=[cell.casefold() for cell in row]
+        if any("name of the auditing organization" in cell for cell in labels):
+            evidence=parser.rows[index+1]
+            if len(evidence)>=5 and evidence[0].strip() and re.fullmatch(r"\d{4}-\d{2}-\d{2}",evidence[4].strip()):
+                result["audit_status"]="AUDITED"
+                result["audit_organization"]=evidence[0].strip()
+                result["audit_conclusion_date"]=evidence[4].strip()
+    return result
 def parse_decimal(raw:str)->Decimal|None:
     value=raw.strip().replace("\u00a0","").replace(" ","")
     if value in ("","-"): return None
@@ -72,8 +84,17 @@ def parse_statement_rows(content:bytes)->list[ParsedRow]:
     parser=TableParser(); parser.feed(content.decode("utf-8",errors="replace")); out=[]; statement="UNKNOWN"
     for index,cells in enumerate(parser.rows):
         joined=" ".join(cells).casefold()
+        if joined in {"assets","liabilities","liabilities and equity","equity"}: statement="BALANCE_SHEET"; continue
+        if re.match(r"^\d+\.\s+(?:interest income|interest expenses|net interest income|non-interest income|non-interest expenses|net income before operating expenses|operating expenses|income before assessment|income tax assessment|net profit)",joined):
+            statement="INCOME_STATEMENT"
+            if len(cells)==1: continue
         if "at the beginning of the reporting period" in joined: statement="BALANCE_SHEET"; continue
         if "current reporting period" in joined or ("income" in joined and "expense" in joined): statement="INCOME_STATEMENT"; continue
+        if len(cells)==2 and statement in {"BALANCE_SHEET","INCOME_STATEMENT"}:
+            number=parse_decimal(cells[1])
+            if number is not None:
+                out.append(ParsedRow(statement,cells[0],None,cells[1],f"html:row[{index}]/cell[1]"))
+            continue
         if len(cells)<3: continue
         code=cells[1] if re.fullmatch(r"\d{3}",cells[1]) else None
         start=2 if code else 1
@@ -88,6 +109,9 @@ def parse_statement_rows(content:bytes)->list[ParsedRow]:
     if not out: raise ValueError("no structured financial rows found")
     return out
 def _save(repo,run_id,ticker,path_bits,period_start,period_end,published,perimeter,standard,audit,currency,unit,content,raw_dir,url):
+    explicit_metadata=extract_explicit_metadata(content)
+    if audit=="UNKNOWN" and explicit_metadata.get("audit_status"):
+        audit=explicit_metadata["audit_status"]
     digest=hashlib.sha256(content).hexdigest(); source_identifier=path_bits.rsplit('/',1)[-1]
     raw_id=stable_id("raw-financial",f"{url}:{digest}"); document_id=stable_id("financial-document",f"{SOURCE_ID}:{source_identifier}:{digest}")
     raw_dir.mkdir(parents=True,exist_ok=True); storage=raw_dir/f"{raw_id}.html"
@@ -112,7 +136,7 @@ def _save(repo,run_id,ticker,path_bits,period_start,period_end,published,perimet
     repo.connection.execute("INSERT INTO financial_document_entity_checks VALUES(?,?,?,?,?,?,?) ON CONFLICT(document_id) DO UPDATE SET validation_status=excluded.validation_status,reason=excluded.reason,checked_at=excluded.checked_at",(document_id,issuer[0],issuer[1],json.dumps([ticker]),entity_status,entity_reason,utc_now()))
     if not matched:
         return 0,0
-    normalized=0
+    normalized=0; mapped_locations=set(); parsed_locations={row.location for row in rows}; replacements={}
     for row in rows:
         rid=stable_id("financial-raw",f"{document_id}:{row.location}")
         repo.connection.execute("INSERT OR IGNORE INTO financial_raw_values VALUES(?,?,?,?,?,?,?,?,?)",(rid,document_id,row.statement_type,row.label,row.row_code,row.raw_value,"CURRENT_OR_PERIOD_END",row.location,"STRUCTURED_HTML"))
@@ -120,7 +144,16 @@ def _save(repo,run_id,ticker,path_bits,period_start,period_end,published,perimet
         if concept and number is not None:
             oid=stable_id("financial-observation",f"{document_id}:{concept}:{row.location}")
             repo.connection.execute("INSERT OR IGNORE INTO financial_observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(oid,document_id,issuer[0],row.statement_type,concept,period_start,period_end,row.raw_value,str(number),currency,unit,"AS_REPORTED",row.location,"STRUCTURED_HTML","HIGH","REPORTED"))
-            append_version(repo,oid,document_id,issuer[0],row.statement_type,concept,period_start,period_end,row.raw_value,str(number),currency,unit,row.location,"STRUCTURED_HTML","HIGH","REPORTED",PARSER_VERSION); normalized+=1
+            version_id=append_version(repo,oid,document_id,issuer[0],row.statement_type,concept,period_start,period_end,row.raw_value,str(number),currency,unit,row.location,"STRUCTURED_HTML","HIGH","REPORTED",PARSER_VERSION)
+            mapped_locations.add(row.location); replacements[concept]=version_id; normalized+=1
+    # If a newer deterministic taxonomy rejects a formerly mapped row, retain
+    # the old version but remove it from the current set by linking it to the
+    # new valid version of that concept. This prevents stale parser mistakes
+    # from coexisting with corrected totals.
+    for old in repo.connection.execute("SELECT version_id,canonical_concept,source_location,parser_version FROM financial_observation_versions WHERE document_id=? AND superseded_by_version_id IS NULL",(document_id,)).fetchall():
+        replacement=replacements.get(old["canonical_concept"])
+        if old["parser_version"]!=PARSER_VERSION and old["source_location"] in parsed_locations and old["source_location"] not in mapped_locations and replacement:
+            repo.connection.execute("UPDATE financial_observation_versions SET superseded_by_version_id=? WHERE version_id=?",(replacement,old["version_id"]))
     _validate(repo,document_id)
     return len(rows),normalized
 def _validate(repo,document_id):

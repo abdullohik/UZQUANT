@@ -21,7 +21,7 @@ RULES=(
  ("Long-Term Debt",r"long-term (?:bank )?loans|долгосрочн.*кредит|uzoq muddatli kredit"),
  ("Short-Term Debt",r"short-term (?:bank )?loans|краткосрочн.*кредит|qisqa muddatli kredit"),
  ("Other Liabilities",r"^24\. other liabilities|^other liabilities|прочие обязательства|boshqa majburiyat"),
- ("Share Capital",r"authorized capital|share capital|уставн.*капитал|ustav kapital"),
+ ("Share Capital",r"authorized capital|share capital|charter capital|уставн.*капитал|ustav kapital"),
  ("Retained Earnings",r"retained earnings|нераспределенн.*прибыл|taqsimlanmagan foyda"),
  ("Revenue",r"net revenue from sales|^revenue$|выручк|sotishdan sof tushum"),
  ("COGS",r"cost of goods sold|себестоимость|sotilgan.*tannarx"),
@@ -29,8 +29,8 @@ RULES=(
  ("Operating Expenses",r"period expenses, total|operating expenses|расходы периода|davr xarajat"),
  ("Interest Expense",r"^interest expenses$|процентные расходы|foiz xarajat"),
  ("Pretax Income",r"profit .* before income tax|прибыль.*до налог|soliq.*oldingi foyda"),
- ("Taxes",r"^income \(profit\) tax$|налог на прибыль|foyda solig"),
- ("Net Income",r"net profit .* for the period|чистая прибыль|sof foyda"),
+ ("Taxes",r"^income \(profit\) tax$|income tax assessment|налог на прибыль|foyda solig"),
+ ("Net Income",r"net profit .* for the period|^\d+\. net profit$|чистая прибыль|sof foyda"),
  ("EPS",r"earnings per share|прибыль на акцию|aksiya.*foyda"),
  ("Operating Cash Flow",r"net cash.*operating|чист.*денеж.*операцион|operatsion.*pul"),
  ("Investing Cash Flow",r"net cash.*investing|инвестицион.*денеж|investitsion.*pul"),
@@ -38,15 +38,15 @@ RULES=(
  ("CapEx",r"capital expenditures|капитальн.*затрат|kapital xarajat"),
  ("Dividends",r"^dividends$|^дивиденды$|^dividendlar$"),
  ("D&A",r"depreciation and amorti|амортизац|amortizats"),
- ("Loans",r"^loans(?: to customers)?(?:, net)?$|кредит.*клиент|mijoz.*kredit"),
+ ("Loans",r"^loans(?: to customers)?(?:, net)?$|loans and leasing operations, net|кредит.*клиент|mijoz.*kredit"),
  ("Deposits",r"customer deposits|deposits from customers|средства клиентов|депозит.*клиент|mijoz.*depozit"),
  ("Net Interest Income",r"net interest income|чист.*процентн.*доход|sof foizli daromad"),
  ("Average Earning Assets",r"average interest.earning assets|средн.*доходн.*актив"),
  ("Nonperforming Loans",r"non.?performing loans|проблемн.*кредит|npl"),
- ("Loan Loss Provisions",r"loan loss provision|impairment.*loans|резерв.*кредит"),
+ ("Loan Loss Provisions",r"loan loss provision|provision for possible loan and leasing losses|impairment.*loans|резерв.*кредит"),
  ("Regulatory Capital",r"regulatory capital|регулятивн.*капитал|regulyativ kapital"),
  ("Risk Weighted Assets",r"risk.weighted assets|актив.*взвешенн.*риск"),
- ("Non-Interest Income",r"non.interest income|непроцентн.*доход"),
+ ("Non-Interest Income",r"^(?:f\.\s+)?total non.interest income$|^non.interest income$|непроцентн.*доход"),
  ("Premiums",r"insurance premiums|gross written premiums|страхов.*преми|sug.urta mukofot"),
  ("Claims",r"insurance claims|claims incurred|страхов.*выплат|sug.urta to.lov"),
  ("Underwriting Expenses",r"underwriting expenses|расход.*страхов.*деятель"),
@@ -65,6 +65,11 @@ def map_concept(label:str)->str|None:
 def map_source_concept(label:str,row_code:str|None=None,statement_type:str|None=None,sector:str|None=None)->str|None:
     """Deterministic mappings for labels actually observed in approved Openinfo forms."""
     value=normalize_label(label)
+    # The statutory bank form reports both pre- and post-provision subtotals.
+    # The canonical NII concept is the explicit pre-provision subtotal; mapping
+    # both would silently make the same document internally ambiguous.
+    if "net interest income after provision" in value:
+        return None
     # Form row 100 is a balance-sheet construction/capital-investment asset,
     # never period cash-flow CapEx despite the English portal translation.
     if statement_type=="BALANCE_SHEET" and row_code=="100" and "capital" in value:
