@@ -33,6 +33,13 @@ class FinancialTests(unittest.TestCase):
   self.assertEqual(extract_explicit_metadata(content),{})
   content=b'''<table><tr><th>Name of the Auditing Organization</th><th>License Issue Date</th><th>License</th><th>Type</th><th>Audit Conclusion Issue Date</th></tr><tr><td>KPMG Audit</td><td>2023-11-28</td><td>35</td><td>Positive</td><td>2026-05-04</td></tr></table>'''
   self.assertEqual(extract_explicit_metadata(content)["audit_status"],"AUDITED")
+ def test_explicit_statement_metadata_phrases_only(self):
+  content=b'''<table><tr><td>Consolidated financial statements under IFRS</td></tr><tr><td>Amounts in thousands of Uzbek soums</td></tr></table>'''
+  found=extract_explicit_metadata(content)
+  self.assertEqual((found["reporting_perimeter"],found["accounting_standard"],found["source_unit"],found["currency"]),("CONSOLIDATED","IFRS","THOUSAND_UZS","UZS"))
+  unrelated=b'''<table><tr><td>Cash in Foreign Currency</td><td>1000</td></tr><tr><td>On shares, in sums</td><td>2</td></tr></table>'''
+  found=extract_explicit_metadata(unrelated)
+  self.assertNotIn("source_unit",found); self.assertNotIn("reporting_perimeter",found)
  def test_multilingual_taxonomy(self):
   self.assertEqual(map_concept("Чистая прибыль"),"Net Income"); self.assertEqual(map_concept("Sotishdan sof tushum"),"Revenue"); self.assertIsNone(map_concept("Unmapped custom row"))
   self.assertEqual(map_concept("Net interest income"),"Net Interest Income")

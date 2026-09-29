@@ -1,6 +1,6 @@
 # Mission 2b Universe Valuations
 
-Generated: 2026-09-29T06:55:21.832189+00:00. Existing valuation methods and gates are unchanged. Baseline cohort: 12 securities. Bank parser remediation was rerun separately for AGBA/AGBAP/HMKB/HMKBP.
+Generated: 2026-09-29T08:13:17.724966+00:00. Existing valuation methods and gates are unchanged. Baseline cohort: 12 securities. Bank parser remediation was rerun separately for AGBA/AGBAP/HMKB/HMKBP.
 
 | Ticker | Method | Outcome | Bear | Base | Bull | Confidence | Exact blockers |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -84,3 +84,7 @@ Generated: 2026-09-29T06:55:21.832189+00:00. Existing valuation methods and gate
 | BIOK | P/E | REJECTED_WITH_REASON | Unavailable | Unavailable | Unavailable | UNAVAILABLE | INSUFFICIENT_CREDIBLE_PEER_SET, INSUFFICIENT_FINANCIAL_HISTORY, UNVERIFIED_FINANCIAL_UNIT, UNVERIFIED_REPORTING_PERIMETER |
 
 Newly executable valuations: none. IPKY Residual Income remains the sole executable production valuation.
+
+## Mission 2c metadata result
+
+As of 2026-09-29T08:13:17.416473+00:00, strict extraction found no additional explicit required metadata in retained documents. Fully resolved documents remain 1/38; valuation methods and frozen gates are unchanged.

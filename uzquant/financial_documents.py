@@ -62,6 +62,20 @@ class TableParser(HTMLParser):
 def extract_explicit_metadata(content:bytes)->dict[str,str]:
     """Extract only metadata stated in the rendered document tables."""
     parser=TableParser(); parser.feed(content.decode("utf-8",errors="replace")); result={}
+    for index,row in enumerate(parser.rows):
+        text=" | ".join(row); normalized=" ".join(text.casefold().split())
+        if re.search(r"(?:amounts?\s+)?in thousands? of (?:uzbek )?(?:soums?|sums?)|в тысячах узбекских сумов|минг сўм",normalized):
+            result.update(source_unit="THOUSAND_UZS",currency="UZS",unit_evidence=text,unit_location=f"html:row[{index}]")
+        elif re.search(r"(?:amounts?\s+)?in millions? of (?:uzbek )?(?:soums?|sums?)|в миллионах узбекских сумов|миллион сўм",normalized):
+            result.update(source_unit="MILLION_UZS",currency="UZS",unit_evidence=text,unit_location=f"html:row[{index}]")
+        if "consolidated financial statements" in normalized or re.search(r"консолидированн\w*\s+финансов\w*\s+отчет",normalized):
+            result.update(reporting_perimeter="CONSOLIDATED",perimeter_evidence=text,perimeter_location=f"html:row[{index}]")
+        elif "standalone financial statements" in normalized or "separate financial statements" in normalized or re.search(r"отдельн\w*\s+финансов\w*\s+отчет",normalized):
+            result.update(reporting_perimeter="STANDALONE",perimeter_evidence=text,perimeter_location=f"html:row[{index}]")
+        if "international financial reporting standards" in normalized or re.search(r"\bifrs\b|\bмсфо\b",normalized):
+            result.update(accounting_standard="IFRS",standard_evidence=text,standard_location=f"html:row[{index}]")
+        elif "national accounting standards" in normalized or re.search(r"\bnas\b|\bнсбу\b",normalized):
+            result.update(accounting_standard="LOCAL_STATUTORY",standard_evidence=text,standard_location=f"html:row[{index}]")
     for index,row in enumerate(parser.rows[:-1]):
         labels=[cell.casefold() for cell in row]
         if any("name of the auditing organization" in cell for cell in labels):
@@ -70,6 +84,8 @@ def extract_explicit_metadata(content:bytes)->dict[str,str]:
                 result["audit_status"]="AUDITED"
                 result["audit_organization"]=evidence[0].strip()
                 result["audit_conclusion_date"]=evidence[4].strip()
+                result["audit_evidence"]=" | ".join(evidence)
+                result["audit_location"]=f"html:row[{index+1}]"
     return result
 def parse_decimal(raw:str)->Decimal|None:
     value=raw.strip().replace("\u00a0","").replace(" ","")
@@ -112,6 +128,14 @@ def _save(repo,run_id,ticker,path_bits,period_start,period_end,published,perimet
     explicit_metadata=extract_explicit_metadata(content)
     if audit=="UNKNOWN" and explicit_metadata.get("audit_status"):
         audit=explicit_metadata["audit_status"]
+    if perimeter=="UNKNOWN" and explicit_metadata.get("reporting_perimeter"):
+        perimeter=explicit_metadata["reporting_perimeter"]
+    if standard=="UNKNOWN" and explicit_metadata.get("accounting_standard"):
+        standard=explicit_metadata["accounting_standard"]
+    if not currency and explicit_metadata.get("currency"):
+        currency=explicit_metadata["currency"]
+    if unit in {"UNKNOWN","SOURCE_UNIT_UNSPECIFIED"} and explicit_metadata.get("source_unit"):
+        unit=explicit_metadata["source_unit"]
     digest=hashlib.sha256(content).hexdigest(); source_identifier=path_bits.rsplit('/',1)[-1]
     raw_id=stable_id("raw-financial",f"{url}:{digest}"); document_id=stable_id("financial-document",f"{SOURCE_ID}:{source_identifier}:{digest}")
     raw_dir.mkdir(parents=True,exist_ok=True); storage=raw_dir/f"{raw_id}.html"
@@ -128,6 +152,12 @@ def _save(repo,run_id,ticker,path_bits,period_start,period_end,published,perimet
     prior=repo.connection.execute("SELECT document_id FROM financial_documents WHERE source_id=? AND source_identifier=? AND content_hash<>? ORDER BY retrieved_at DESC LIMIT 1",(SOURCE_ID,source_identifier,digest)).fetchone()
     revision_status,revises=("REVISED",prior[0]) if prior else ("ORIGINAL",None)
     repo.connection.execute("INSERT INTO financial_documents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_id,source_identifier,content_hash) DO UPDATE SET reporting_perimeter=excluded.reporting_perimeter,period_start=excluded.period_start,period_end=excluded.period_end,publication_date=excluded.publication_date,accounting_standard=excluded.accounting_standard,audit_status=excluded.audit_status,currency=excluded.currency,parser_version=excluded.parser_version",(document_id,issuer[0],raw_id,issuer[1],perimeter,period_start,period_end,published,None,"ANNUAL" if "/annual/" in path_bits else "QUARTERLY","HTML",standard,audit,currency,SOURCE_ID,url,source_identifier,utc_now(),digest,PARSER_VERSION,revision_status,revises))
+    evidence_fields=(("SOURCE_UNIT","source_unit","unit_evidence","unit_location"),("REPORTING_PERIMETER","reporting_perimeter","perimeter_evidence","perimeter_location"),("ACCOUNTING_STANDARD","accounting_standard","standard_evidence","standard_location"),("AUDIT_STATUS","audit_status","audit_evidence","audit_location"))
+    for field_name,value_key,quote_key,location_key in evidence_fields:
+        if value_key not in explicit_metadata: continue
+        location=explicit_metadata.get(location_key,"html:explicit-metadata")
+        evidence_id=stable_id("metadata-evidence",f"{document_id}:{field_name}:{location}")
+        repo.connection.execute("INSERT OR IGNORE INTO financial_document_metadata_evidence VALUES(?,?,?,?,?,?,?,?,?,?)",(evidence_id,document_id,field_name,explicit_metadata[value_key],"HIGH",raw_id,url,f"{location}: {explicit_metadata.get(quote_key,'explicit document text')}",PARSER_VERSION,utc_now()))
     evidence=json.dumps({"ticker":ticker,"isin":REPORT_ISINS[ticker],"evidence_ids":resolution.evidence_ids,"source_identifier":source_identifier},sort_keys=True)
     repo.connection.execute("INSERT INTO financial_document_identity_assignments VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(document_id) DO UPDATE SET canonical_issuer_id=excluded.canonical_issuer_id,security_id=excluded.security_id,publication_date=excluded.publication_date,assignment_status=excluded.assignment_status,assignment_method=excluded.assignment_method,evidence_json=excluded.evidence_json,assigned_at=excluded.assigned_at",(str(uuid.uuid4()),document_id,resolution.canonical_issuer_id,resolution.security_id,published,"VERIFIED","EFFECTIVE_DATED_TICKER_AND_ISIN",evidence,utc_now()))
     matched=True
