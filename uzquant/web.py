@@ -22,6 +22,7 @@ class ResearchApplication:
             if path=="/api/v1/health": return self._json(start_response,200,{"status":"OK","service":"UZQUANT Research API"})
             if path=="/api/v1/overview": return self._json(start_response,200,self.service.overview())
             if path=="/api/v1/universe": return self._json(start_response,200,self.service.universe({k:v[0] for k,v in parse_qs(environ.get("QUERY_STRING","")).items()}))
+            if path=="/api/v1/coverage": return self._json(start_response,200,self.service.coverage())
             if path=="/api/v1/macro": return self._json(start_response,200,self.service.macro())
             if path=="/api/v1/portfolios": return self._json(start_response,200,self.service.portfolios())
             if path=="/api/v1/backtests": return self._json(start_response,200,self.service.backtests())

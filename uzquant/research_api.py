@@ -1,15 +1,27 @@
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from pathlib import Path
 
 from .repository import Repository
 
-API_VERSION = "research-api/1.1.0"
+API_VERSION = "research-api/1.2.0"
 
 FACTOR_NAMES = ("Valuation", "Quality", "Growth", "Momentum", "Dividend",
                 "Governance", "Catalyst", "Balance-Sheet Risk", "Liquidity",
                 "Data Quality")
+
+
+def _blocker_taxonomy(code: str) -> str:
+    if any(token in code for token in ("PERIMETER", "FINANCIAL_UNIT", "SHARES_OUTSTANDING", "SECURITY_CLASS")):
+        return "METADATA_GAP"
+    if any(token in code for token in ("PARSER", "PARSE")): return "PARSER_GAP"
+    if any(token in code for token in ("FACTOR", "METRIC", "NET_INCOME", "EQUITY", "ASSETS", "INTANGIBLES")):
+        return "DERIVED_METRIC_GAP"
+    if any(token in code for token in ("HISTORY", "DIVIDEND", "RIGHTS", "DOCUMENT", "MARKET", "PEER", "BETA", "RISK_PREMIUM", "GROWTH")):
+        return "PUBLIC_DATA_NOT_YET_COLLECTED"
+    return "MODEL_INTEGRATION_GAP"
 
 
 def _decode(row):
@@ -31,6 +43,19 @@ def _rows(connection, sql, args=()):
 
 def _row(connection, sql, args=()):
     return _decode(connection.execute(sql, args).fetchone())
+
+
+def _historical_excluded(database: Path, current_ids: set[str]) -> list[dict]:
+    """Return preserved canonical securities outside the latest RSE equity set."""
+    with Repository(database) as repo:
+        repo.initialize(); c=repo.connection
+        rows=_rows(c,"""WITH tickers AS (SELECT security_id,identifier_value,
+            ROW_NUMBER() OVER(PARTITION BY security_id ORDER BY known_at DESC,identifier_id DESC) rn
+            FROM identifier_history WHERE identifier_type='TICKER')
+            SELECT s.security_id,t.identifier_value ticker,s.security_class_code,i.legal_name
+            FROM securities s JOIN issuers i USING(issuer_id) JOIN tickers t ON t.security_id=s.security_id AND t.rn=1
+            ORDER BY t.identifier_value""")
+        return [r for r in rows if r["security_id"] not in current_ids]
 
 
 def _health_context(connection):
@@ -86,43 +111,114 @@ class ResearchService:
         filters = filters or {}
         with Repository(self.database) as repo:
             repo.initialize()
-            identities = _rows(repo.connection, """
-                WITH latest AS (SELECT security_id,identifier_value,known_at,ROW_NUMBER() OVER(PARTITION BY security_id ORDER BY known_at DESC) n
-                FROM identifier_history WHERE identifier_type='TICKER')
-                SELECT s.security_id,s.issuer_id,l.identifier_value ticker,s.security_class_code,i.legal_name,i.sector
-                FROM securities s JOIN issuers i USING(issuer_id) JOIN latest l ON l.security_id=s.security_id AND l.n=1 ORDER BY l.identifier_value
+            c=repo.connection
+            # The current research universe is the ISIN union in the latest complete
+            # official RSE capture.  Canonical securities absent from it remain in the
+            # database as history, but never leak into the current screener.
+            identities = _rows(c, """
+                WITH capture AS (SELECT capture_id FROM rse_universe_captures WHERE pagination_complete=1 ORDER BY retrieved_at DESC LIMIT 1),
+                current AS (SELECT isin,max(ticker) ticker,max(issuer_name) source_issuer,max(instrument_class) instrument_class
+                  FROM rse_universe_instruments JOIN capture USING(capture_id)
+                  WHERE instrument_class IN('COMMON_EQUITY','PREFERRED_EQUITY') GROUP BY isin),
+                isin_ids AS (SELECT security_id,identifier_value,ROW_NUMBER() OVER(PARTITION BY identifier_value ORDER BY known_at DESC,identifier_id DESC) rn
+                  FROM identifier_history WHERE identifier_type='ISIN'),
+                tickers AS (SELECT security_id,identifier_value,ROW_NUMBER() OVER(PARTITION BY security_id ORDER BY known_at DESC,identifier_id DESC) rn
+                  FROM identifier_history WHERE identifier_type='TICKER')
+                SELECT s.security_id,s.issuer_id,t.identifier_value ticker,s.security_class_code,i.legal_name,i.sector,i.industry,current.isin
+                FROM current JOIN isin_ids x ON x.identifier_value=current.isin AND x.rn=1
+                JOIN securities s USING(security_id) JOIN issuers i USING(issuer_id)
+                JOIN tickers t ON t.security_id=s.security_id AND t.rn=1 ORDER BY t.identifier_value
             """)
+            ids=[x["security_id"] for x in identities]
+            if not ids: return {"api_version":API_VERSION,"status":"OK","health_context":_health_context(c),"count":0,"securities":[]}
+            marks=",".join("?" for _ in ids)
+            def indexed(sql, key="security_id"):
+                return {r[key]:r for r in _rows(c,sql,ids)}
+            market=indexed(f"""WITH ranked AS (SELECT m.*,ROW_NUMBER() OVER(PARTITION BY security_id ORDER BY trade_date DESC,last_seen_at DESC) rn
+                FROM market_observations m WHERE series_type='RAW_OBSERVED' AND security_id IN ({marks}))
+                SELECT security_id,trade_date,coalesce(last,close,individual_trade_price) price,currency,observation_status,source_id,document_id,last_seen_at,share_volume,turnover_value FROM ranked WHERE rn=1""")
+            history={}
+            for row in _rows(c,f"""SELECT security_id,trade_date,coalesce(last,close,individual_trade_price) price
+                FROM market_observations WHERE series_type='RAW_OBSERVED' AND security_id IN ({marks})
+                AND coalesce(last,close,individual_trade_price) IS NOT NULL ORDER BY security_id,trade_date""",ids):
+                history.setdefault(row["security_id"],[]).append(row)
+            signals=indexed(f"""WITH ranked AS (SELECT r.*,ROW_NUMBER() OVER(PARTITION BY security_id ORDER BY generated_at DESC) rn FROM research_signals r WHERE security_id IN ({marks})) SELECT * FROM ranked WHERE rn=1""")
+            liquidity=indexed(f"""WITH ranked AS (SELECT l.*,ROW_NUMBER() OVER(PARTITION BY security_id ORDER BY created_at DESC) rn FROM liquidity_assessments l WHERE security_id IN ({marks})) SELECT security_id,liquidity_state,liquidity_confidence,as_of_date,features_json,hard_flags_json FROM ranked WHERE rn=1""")
+            valuations=indexed(f"""WITH ranked AS (SELECT v.*,ROW_NUMBER() OVER(PARTITION BY security_id ORDER BY (status='AVAILABLE') DESC,created_at DESC) rn FROM valuation_records v WHERE security_id IN ({marks})) SELECT security_id,valuation_id,status,valuation_date,bear_value,base_value,bull_value,confidence,method,currency FROM ranked WHERE rn=1""")
+            attempts={}
+            for row in _rows(c,f"""WITH ranked AS (SELECT a.*,ROW_NUMBER() OVER(PARTITION BY security_id,model_name ORDER BY created_at DESC) rn FROM valuation_model_attempts a WHERE security_id IN ({marks})) SELECT * FROM ranked WHERE rn=1""",ids): attempts.setdefault(row["security_id"],[]).append(row)
+            component=indexed(f"""SELECT s.security_id,
+                (SELECT count(*) FROM market_observations m WHERE m.security_id=s.security_id AND m.series_type='RAW_OBSERVED') market_count,
+                (SELECT count(*) FROM financial_documents d JOIN financial_document_identity_assignments a ON a.document_id=d.document_id AND a.assignment_status='VERIFIED' WHERE d.issuer_id=s.issuer_id) document_count,
+                (SELECT count(*) FROM fundamental_metrics f WHERE f.issuer_id=s.issuer_id AND f.status='AVAILABLE') fundamental_count,
+                (SELECT count(*) FROM share_capital_observations sh WHERE sh.security_id=s.security_id AND sh.verification_status='VERIFIED') shares_count,
+                (SELECT count(*) FROM security_rights sr WHERE sr.security_id=s.security_id) rights_count,
+                (SELECT count(*) FROM ownership_positions o WHERE o.issuer_id=s.issuer_id AND (o.security_id=s.security_id OR o.security_id IS NULL)) ownership_count
+                FROM securities s WHERE s.security_id IN ({marks})""")
+            stale={r["security_id"] for r in _rows(c,f"SELECT DISTINCT security_id FROM market_quality_flags WHERE security_id IN ({marks}) AND flag_type IN('STALE_PRICE','VERY_STALE_PRICE')",ids)}
             result=[]
             for item in identities:
-                sid=item["security_id"]
-                market=_row(repo.connection,"SELECT trade_date,coalesce(last,close,individual_trade_price) price,currency,observation_status,source_id,document_id,last_seen_at FROM market_observations WHERE security_id=? AND series_type='RAW_OBSERVED' ORDER BY trade_date DESC LIMIT 1",(sid,))
-                signal=_row(repo.connection,"SELECT * FROM research_signals WHERE security_id=? ORDER BY generated_at DESC LIMIT 1",(sid,))
-                liquidity=_row(repo.connection,"SELECT liquidity_state,liquidity_confidence,as_of_date FROM liquidity_assessments WHERE security_id=? ORDER BY created_at DESC LIMIT 1",(sid,))
-                valuation=_row(repo.connection,"SELECT valuation_id,status,valuation_date,bear_value,base_value,bull_value,confidence,method,currency FROM valuation_records WHERE security_id=? ORDER BY (status='AVAILABLE') DESC,created_at DESC LIMIT 1",(sid,))
-                factors=(signal or {}).get("factor_scores_json",{})
+                sid=item["security_id"]; market_row=market.get(sid); signal=signals.get(sid); liquidity_row=liquidity.get(sid); valuation=valuations.get(sid); comp=component.get(sid,{})
+                performance={"one_month":None,"three_month":None,"status":"INSUFFICIENT_HISTORY"}
+                observations=history.get(sid,[])
+                if market_row and market_row.get("price") is not None:
+                    last_date=date.fromisoformat(market_row["trade_date"]); latest=float(market_row["price"])
+                    for label,days in (("one_month",30),("three_month",90)):
+                        prior=next((x for x in reversed(observations) if date.fromisoformat(x["trade_date"])<=last_date-timedelta(days=days)),None)
+                        if prior and float(prior["price"])!=0: performance[label]=(latest/float(prior["price"])-1)*100
+                    if performance["one_month"] is not None or performance["three_month"] is not None: performance["status"]="OBSERVED_ENDPOINT_RETURN"
+                factors=(signal or {}).get("factor_scores_json",{}) or {}
                 available_factors=[name for name,value in factors.items() if value.get("status")=="AVAILABLE" and value.get("score") is not None]
                 factor_count=len(available_factors)
                 valuation_status=valuation["status"] if valuation else "VALUATION_INSUFFICIENT"
                 signal_state=signal.get("signal_state") if signal else "DATA_INSUFFICIENT"
                 if valuation_status=="AVAILABLE" and factor_count>=4 and signal_state!="DATA_INSUFFICIENT": coverage="RESEARCH_READY"
-                elif market or factors: coverage="PARTIALLY_RESEARCHABLE"
+                elif market_row or factors: coverage="PARTIALLY_RESEARCHABLE"
                 else: coverage="DATA_INSUFFICIENT"
-                market_flags=[r[0] for r in repo.connection.execute("SELECT flag_type FROM market_quality_flags WHERE security_id=? AND flag_type IN('STALE_PRICE','VERY_STALE_PRICE') ORDER BY created_at DESC",(sid,)).fetchall()]
-                freshness="STALE" if market_flags else ("CURRENT_OBSERVATION" if market else "NO_MARKET_DATA")
+                freshness="STALE" if sid in stale else ("CURRENT_OBSERVATION" if market_row else "NO_MARKET_DATA")
                 blockers=[]
-                if valuation_status!="AVAILABLE": blockers.append("VALUATION_INSUFFICIENT")
-                if factor_count<4: blockers.append("INSUFFICIENT_FACTOR_COVERAGE")
-                if signal_state=="DATA_INSUFFICIENT": blockers.append("DATA_INSUFFICIENT")
-                if freshness=="STALE": blockers.append("STALE")
-                result.append({**item,"market":market,"valuation":valuation,"valuation_status":valuation_status,
+                for attempt in attempts.get(sid,[]):
+                    if attempt.get("status")!='EXECUTED':
+                        reasons=attempt.get("missing_inputs_json") or [attempt.get("reason") or "VALUATION_INPUTS_UNAVAILABLE"]
+                        for reason in reasons:
+                            blockers.append({"code":reason,"taxonomy":_blocker_taxonomy(reason),"evidence":f"{attempt.get('model_name')} rejected: {reason}"})
+                if valuation_status!="AVAILABLE" and not blockers: blockers.append({"code":"VALUATION_INSUFFICIENT","taxonomy":"MODEL_INTEGRATION_GAP","evidence":"No executable stored valuation method"})
+                if factor_count<4: blockers.append({"code":"INSUFFICIENT_FACTOR_COVERAGE","taxonomy":"DERIVED_METRIC_GAP","evidence":f"{factor_count} of 4 required factors available"})
+                if not comp.get("document_count"): blockers.append({"code":"NO_VERIFIED_FINANCIAL_DOCUMENT","taxonomy":"PUBLIC_DATA_NOT_YET_COLLECTED","evidence":"No identity-verified issuer financial document"})
+                if not comp.get("shares_count"): blockers.append({"code":"MISSING_VERIFIED_CLASS_SHARES_OUTSTANDING","taxonomy":"METADATA_GAP","evidence":"No verified class-specific share observation"})
+                if item["security_class_code"]=="PREFERRED" and not comp.get("rights_count"): blockers.append({"code":"PREFERRED_RIGHTS_UNVERIFIED","taxonomy":"PUBLIC_DATA_NOT_YET_COLLECTED","evidence":"No authoritative class-rights record"})
+                if freshness=="STALE": blockers.append({"code":"STALE_MARKET_DATA","taxonomy":"REQUIRES_TIME","evidence":"Stored stale-price quality flag"})
+                if not market_row: blockers.append({"code":"NO_MARKET_HISTORY","taxonomy":"PUBLIC_DATA_NOT_YET_COLLECTED","evidence":"No raw observed market record"})
+                # Exact code/evidence pairs may repeat across methods; keep stable unique entries.
+                blockers=list({(b["code"],b["evidence"]):b for b in blockers}.values())
+                priority={"NO_VERIFIED_FINANCIAL_DOCUMENT":0,"NO_MARKET_HISTORY":1,"UNVERIFIED_REPORTING_PERIMETER":2,"UNVERIFIED_FINANCIAL_UNIT":3,
+                          "MISSING_VERIFIED_CLASS_SHARES_OUTSTANDING":4,"PREFERRED_RIGHTS_UNVERIFIED":5,"VALUATION_INSUFFICIENT":6,
+                          "INSUFFICIENT_FACTOR_COVERAGE":7,"STALE_MARKET_DATA":8}
+                blockers.sort(key=lambda b:(priority.get(b["code"],5),b["code"],b["evidence"]))
+                top=blockers[0] if blockers else None
+                upside=None
+                if valuation and valuation.get("status")=="AVAILABLE" and valuation.get("base_value") is not None and market_row and market_row.get("price") not in (None,"0",0): upside=(float(valuation["base_value"])/float(market_row["price"])-1)*100
+                result.append({**item,"market":market_row,"performance":performance,"valuation":valuation,"valuation_status":valuation_status,"upside_to_base_percent":upside,
+                    "factors":{name:factors.get(name,{"status":"UNAVAILABLE","score":None,"unavailable_reason":"NO_STORED_FACTOR"}) for name in FACTOR_NAMES},
                     "quality":factors.get("Quality"),"growth":factors.get("Growth"),"data_quality":factors.get("Data Quality"),
                     "confidence":signal.get("confidence") if signal else None,"signal":signal_state,
-                    "risk_gates":signal.get("triggered_gates_json",[]) if signal else [],"liquidity":liquidity,
+                    "risk_gates":signal.get("triggered_gates_json",[]) if signal else [],"liquidity":liquidity_row,
                     "factor_count":factor_count,"available_factors":available_factors,"required_factor_count":4,
-                    "coverage_state":coverage,"coverage_blockers":sorted(set(blockers)),"freshness":freshness})
+                    "coverage_state":coverage,"coverage_blockers":[b["code"] for b in blockers],"blockers":blockers,"top_blocker":top,
+                    "coverage_components":comp,"freshness":freshness})
             def keep(x):
                 return (not filters.get("sector") or x.get("sector")==filters["sector"]) and (not filters.get("signal") or x["signal"]==filters["signal"]) and (not filters.get("liquidity") or (x.get("liquidity") or {}).get("liquidity_state")==filters["liquidity"]) and (not filters.get("valuation") or x["valuation_status"]==filters["valuation"]) and (not filters.get("security_class") or x["security_class_code"]==filters["security_class"]) and (not filters.get("freshness") or x["freshness"]==filters["freshness"]) and (not filters.get("coverage") or x["coverage_state"]==filters["coverage"])
             return {"api_version":API_VERSION,"status":"OK","health_context":_health_context(repo.connection),"count":sum(keep(x) for x in result),"securities":[x for x in result if keep(x)]}
+
+    def coverage(self):
+        payload=self.universe(); rows=payload["securities"]
+        categories={}; issuers={}
+        for row in rows:
+            category=(row.get("top_blocker") or {}).get("taxonomy","NONE"); categories[category]=categories.get(category,0)+1
+            issuers.setdefault(row["issuer_id"],{"issuer_id":row["issuer_id"],"legal_name":row["legal_name"],"securities":[]})["securities"].append(row["ticker"])
+        return {"api_version":API_VERSION,"status":"OK","health_context":payload["health_context"],"count":len(rows),
+                "historical_excluded":_historical_excluded(self.database,{r["security_id"] for r in rows}),
+                "blocker_category_counts":categories,"issuer_groups":sorted(issuers.values(),key=lambda x:x["legal_name"]),"securities":rows}
 
     def overview(self):
         universe=self.universe()["securities"]
@@ -153,11 +249,19 @@ class ResearchService:
             alerts=_rows(c,"SELECT alert_type,severity,entity_type,entity_id,title,message,created_at FROM research_alerts WHERE status='OPEN' ORDER BY created_at DESC LIMIT 10")
             transitions=_rows(c,"SELECT * FROM signal_state_transitions ORDER BY changed_at DESC LIMIT 10")
             health=_rows(c,"SELECT pipeline,status,last_success_at,expected_refresh_at,latest_error,source FROM pipeline_health ORDER BY pipeline")
+            observed=[x for x in universe if x.get("market")]
+            one_month=[x.get("performance",{}).get("one_month") for x in universe]
+            market_summary={"current_equities":len(universe),"observed_prices":len(observed),
+                "one_month_up":sum(v is not None and v>0 for v in one_month),
+                "one_month_down":sum(v is not None and v<0 for v in one_month),
+                "one_month_unchanged":sum(v is not None and v==0 for v in one_month),
+                "one_month_unavailable":sum(v is None for v in one_month),
+                "latest_turnover_value":sum(float(x["market"].get("turnover_value") or 0) for x in observed),"currency":"UZS"}
             return {"api_version":API_VERSION,"status":"OK","generated_from":"CANONICAL_BACKEND_RECORDS",
                     "health_context":_health_context(c),"pipeline_counts":counts(health,"status"),
                     "coverage_counts":counts(universe,"coverage_state"),"signal_counts":counts(universe,"signal"),
                     "valuation_counts":counts(universe,"valuation_status"),"liquidity_counts":counts([{"state":(x.get("liquidity") or {}).get("liquidity_state")} for x in universe],"state"),
-                    "security_count":len(universe),"latest_market":latest_market,"latest_valuations":valuations,
+                    "security_count":len(universe),"market_summary":market_summary,"latest_market":latest_market,"latest_valuations":valuations,
                     "latest_transitions":transitions,"alerts":alerts,"snapshots":snapshots,"backfill":backfill,
                     "pipelines":health}
 
