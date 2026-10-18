@@ -5,7 +5,16 @@ const missing=v=>v===null||v===undefined||v==='';
 const val=v=>missing(v)?'<span class="na">n/a</span>':esc(v),num=(v,d=1)=>missing(v)?'<span class="na">n/a</span>':Number(v).toLocaleString('en',{maximumFractionDigits:d}),compact=v=>missing(v)?'<span class="na">n/a</span>':Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:2}).format(Number(v)),pct=v=>missing(v)?'<span class="na">n/a</span>':`${Number(v).toFixed(1)}%`,day=v=>v?esc(String(v).slice(0,10)):'<span class="na">n/a</span>';
 const badge=(v,t='')=>`<span class="badge ${t||String(v||'unavailable').toLowerCase().replaceAll('_','-')}">${esc(v||'n/a')}</span>`;
 const panel=(n,b,c='')=>`<article class="panel ${c}"><header><h2>${esc(n)}</h2></header>${b}</article>`,title=(k,h,p,a='')=>`<div class="page-head"><div><span class="eyebrow">${esc(k)}</span><h1>${esc(h)}</h1><p>${esc(p)}</p></div>${a}</div>`,metric=(k,v,n='')=>`<div class="metric"><span>${esc(k)}</span><strong>${v}</strong><small>${esc(n)}</small></div>`,empty=t=>`<div class="empty">${esc(t)}</div>`,link=t=>`<button class="link-button" data-security="${esc(t)}">${esc(t)}</button>`;
-async function api(p){const r=await fetch(p),d=await r.json();if(!r.ok)throw new Error(`${d.status||'Request failed'} · ${r.status}`);return d}
+const staticSnapshot=document.querySelector('meta[name="uzquant-static-snapshot"]')?.content==='true';
+function apiTarget(p){
+  if(!staticSnapshot)return p;
+  const clean=p.split('?')[0],parts=clean.split('/').filter(Boolean);
+  if(parts.length===4&&parts.slice(0,3).join('/')==='api/v1/securities')return `./data/securities/${encodeURIComponent(parts[3])}.json`;
+  if(parts.length===5&&parts.slice(0,3).join('/')==='api/v1/securities'&&parts[4]==='lineage')return `./data/lineage/${encodeURIComponent(parts[3])}.json`;
+  if(parts.length===4&&parts.slice(0,3).join('/')==='api/v1/issuers')return `./data/issuers/${encodeURIComponent(parts[3])}.json`;
+  return `./data/${encodeURIComponent(parts.at(-1)||'index')}.json`;
+}
+async function api(p){const r=await fetch(apiTarget(p)),d=await r.json();if(!r.ok)throw new Error(`${d.status||'Request failed'} · ${r.status}`);return d}
 function table(rows,cols,cls=''){if(!rows?.length)return empty('No canonical records available.');return `<div class="table-wrap ${cls}"><table><thead><tr>${cols.map(c=>`<th>${esc(c[0])}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${cols.map(c=>`<td>${c[1](r)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`}
 function bars(o,t){return `<div class="bar-list">${Object.entries(o||{}).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div><span>${badge(k)}<b>${v}</b></span><div><i style="width:${t?Math.max(2,v/t*100):0}%"></i></div></div>`).join('')}</div>`}
 const nav=v=>document.querySelectorAll('.nav-item').forEach(x=>x.classList.toggle('active',x.dataset.view===v));
