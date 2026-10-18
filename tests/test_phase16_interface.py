@@ -44,8 +44,10 @@ def test_missing_data_is_not_converted_to_zero():
 
 def test_warning_and_insufficient_states_are_visible_in_client():
     html=Path("uzquant/static/index.html").read_text(); js=Path("uzquant/static/app.js").read_text()
-    assert "Missing evidence is never displayed as zero" in html
-    assert "VALUATION_INSUFFICIENT" in html and "LIQUIDITY_TRAP" in html
+    assert "Evidence policy" not in html
+    assert "Missing returns are not converted to zero" in js
+    assert "VALUATION_INSUFFICIENT" in js and "LIQUIDITY_TRAP" in js
+    assert "n/a" in js
     assert "/api/v1/securities/" in js and "/api/v1/validation" in js
 
 
